@@ -41,3 +41,6 @@ build/
 
 # Runtime
 .node_repl_history
+
+# Private planning docs
+ROADMAP_IMPLEMENTATION.local.md
