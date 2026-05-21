@@ -46,6 +46,25 @@ db.exec(`
 );
 `);
 
+// MIGRATION: Add ended_at column if it doesn't exist
+try {
+  const checkColumn = db.prepare(`
+    PRAGMA table_info(sessions)
+  `).all();
+  
+  const hasEndedAt = checkColumn.some(col => col.name === 'ended_at');
+  
+  if (!hasEndedAt) {
+    db.exec(`
+      ALTER TABLE sessions 
+      ADD COLUMN ended_at DATETIME
+    `);
+    console.log('[DB] Migrated: Added ended_at column to sessions table');
+  }
+} catch (err) {
+  console.error('[DB] Migration error:', err.message);
+}
+
 // SESSION INDEXES
 db.exec(`
   CREATE INDEX IF NOT EXISTS idx_sessions_session_token 

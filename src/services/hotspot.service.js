@@ -1,4 +1,3 @@
-const hotspot = require("./hotspot.service");
 function createAccess(mac, minutes) {
   console.log(`[HOTSPOT] GRANT ACCESS -> ${mac} for ${minutes} min`);
   return {

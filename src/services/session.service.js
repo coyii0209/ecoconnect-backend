@@ -160,27 +160,16 @@ function consumeSession(sessionToken, seconds) {
 // CLOSE SESSION
 // -------------------------
 function closeSession(sessionToken) {
-  const session = db.prepare(`
-    SELECT * FROM sessions WHERE session_token = ?
-  `).get(sessionToken);
-
-  if (session) {
+  const tx = db.transaction(() => {
     db.prepare(`
       UPDATE sessions
       SET status = 'EXPIRED',
           ended_at = CURRENT_TIMESTAMP
       WHERE session_token = ?
     `).run(sessionToken);
+  });
 
-    // Wire hotspot integration: revoke access
-    if (session.client_mac) {
-      hotspot.revokeAccess(session.client_mac);
-      db.prepare(`
-        INSERT INTO hotspot_events (device_mac, action)
-        VALUES (?, 'REVOKE')
-      `).run(session.client_mac);
-    }
-  }
+  tx();
 }
 
 // -------------------------

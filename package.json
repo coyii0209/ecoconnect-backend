@@ -4,9 +4,10 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-  "start": "node src/server.js",
-  "dev": "nodemon src/server.js"
-},
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "test:e2e": "node scripts/e2e-smoke.js"
+  },
   "keywords": [],
   "author": "",
   "license": "ISC",
