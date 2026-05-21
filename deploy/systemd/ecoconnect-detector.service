@@ -1,0 +1,20 @@
+[Unit]
+Description=EcoConnect Detector Agent
+After=network.target ecoconnect-backend.service
+Requires=ecoconnect-backend.service
+
+[Service]
+Type=simple
+User=ecoconnect
+WorkingDirectory=/opt/ecoconnect/detector
+Environment="NODE_ENV=production"
+EnvironmentFile=/opt/ecoconnect/backend/.env
+ExecStart=/usr/bin/node src/detector.js
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ecoconnect-detector
+
+[Install]
+WantedBy=multi-user.target

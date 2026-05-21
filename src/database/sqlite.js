@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS detections (
 );
 `);
 
-// REWARDS TABLE (THIS WAS MISSING)
+// REWARDS TABLE
 db.exec(`
 CREATE TABLE IF NOT EXISTS rewards (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS rewards (
 );
 `);
 
-// SESSIONS TABLE
+// SESSIONS TABLE (remote schema preserved)
 db.exec(`
   CREATE TABLE IF NOT EXISTS sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -77,6 +77,63 @@ db.exec(`
 db.exec(`
   CREATE INDEX IF NOT EXISTS idx_transactions_created_at 
   ON transactions (created_at);
+`);
+
+// SCHEMA VERSION (for migrations)
+db.exec(`
+CREATE TABLE IF NOT EXISTS schema_version (
+  version INTEGER PRIMARY KEY,
+  applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+`);
+
+// DEVICES TABLE (tracks hotspot-capable devices)
+db.exec(`
+CREATE TABLE IF NOT EXISTS devices (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  mac_address TEXT UNIQUE NOT NULL,
+  hotspot_enabled INTEGER DEFAULT 0,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+`);
+
+// HOTSPOT EVENTS TABLE (logs access grants/revokes)
+db.exec(`
+CREATE TABLE IF NOT EXISTS hotspot_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  device_mac TEXT,
+  action TEXT,
+  duration_minutes INTEGER,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+`);
+
+// Additional local tables (preserve user's changes)
+db.exec(`
+CREATE TABLE IF NOT EXISTS access_control (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  mac_address TEXT UNIQUE,
+  status TEXT DEFAULT 'blocked',
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+`);
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS processed_events (
+  event_id TEXT PRIMARY KEY,
+  camera_id TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+`);
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS reject_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id TEXT,
+  camera_id TEXT,
+  reason TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
 `);
 
 module.exports = db;

@@ -1,0 +1,20 @@
+[Unit]
+Description=EcoConnect Backend API
+After=network.target
+Wants=ecoconnect-detector.service
+
+[Service]
+Type=simple
+User=ecoconnect
+WorkingDirectory=/opt/ecoconnect/backend
+Environment="NODE_ENV=production"
+EnvironmentFile=/opt/ecoconnect/backend/.env
+ExecStart=/usr/bin/node src/server.js
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ecoconnect-backend
+
+[Install]
+WantedBy=multi-user.target

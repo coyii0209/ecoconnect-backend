@@ -1,5 +1,6 @@
 const db = require("../database/sqlite");
 const { parseDbTimestamp } = require("../utils/time");
+const hotspot = require("./hotspot.service");
 
 // -------------------------
 // OPEN SESSION
@@ -84,6 +85,35 @@ function creditSession(sessionToken, seconds) {
       seconds,
       JSON.stringify({ source: "bottle" })
     );
+
+    // Wire hotspot integration: extend or create access
+    if (session.client_mac) {
+      const device = db.prepare(`
+        SELECT * FROM devices WHERE mac_address = ?
+      `).get(session.client_mac);
+
+      if (device && device.hotspot_enabled) {
+        // Device exists and is enabled: extend access
+        hotspot.extendAccess(session.client_mac, Math.ceil(seconds / 60));
+        db.prepare(`
+          INSERT INTO hotspot_events (device_mac, action, duration_minutes)
+          VALUES (?, 'EXTEND', ?)
+        `).run(session.client_mac, Math.ceil(seconds / 60));
+      } else {
+        // First time: create access
+        hotspot.createAccess(session.client_mac, Math.ceil(seconds / 60));
+        if (!device) {
+          db.prepare(`
+            INSERT INTO devices (mac_address, hotspot_enabled)
+            VALUES (?, 1)
+          `).run(session.client_mac);
+        }
+        db.prepare(`
+          INSERT INTO hotspot_events (device_mac, action, duration_minutes)
+          VALUES (?, 'CREATE', ?)
+        `).run(session.client_mac, Math.ceil(seconds / 60));
+      }
+    }
   });
 
   tx();
@@ -130,12 +160,27 @@ function consumeSession(sessionToken, seconds) {
 // CLOSE SESSION
 // -------------------------
 function closeSession(sessionToken) {
-  db.prepare(`
-    UPDATE sessions
-    SET status = 'EXPIRED',
-        ended_at = CURRENT_TIMESTAMP
-    WHERE session_token = ?
-  `).run(sessionToken);
+  const session = db.prepare(`
+    SELECT * FROM sessions WHERE session_token = ?
+  `).get(sessionToken);
+
+  if (session) {
+    db.prepare(`
+      UPDATE sessions
+      SET status = 'EXPIRED',
+          ended_at = CURRENT_TIMESTAMP
+      WHERE session_token = ?
+    `).run(sessionToken);
+
+    // Wire hotspot integration: revoke access
+    if (session.client_mac) {
+      hotspot.revokeAccess(session.client_mac);
+      db.prepare(`
+        INSERT INTO hotspot_events (device_mac, action)
+        VALUES (?, 'REVOKE')
+      `).run(session.client_mac);
+    }
+  }
 }
 
 // -------------------------
