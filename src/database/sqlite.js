@@ -41,7 +41,7 @@ db.exec(`
     status TEXT DEFAULT 'PENDING',
     credits INTEGER DEFAULT 0,
     started_at DATETIME,
-    expires_at DATETIME,
+    ended_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 `);
@@ -56,6 +56,27 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_sessions_created_at 
   ON sessions (created_at);
+`);
+
+// TRANSACTIONS TABLE
+db.exec(`
+  CREATE TABLE IF NOT EXISTS transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER,
+    type TEXT,
+    amount INTEGER,
+    metadata TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    
+    FOREIGN KEY (session_id) 
+    REFERENCES sessions(id)
+);
+`);
+
+// TRANSACTIONS INDEXES
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_transactions_created_at 
+  ON transactions (created_at);
 `);
 
 module.exports = db;
