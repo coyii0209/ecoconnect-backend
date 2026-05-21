@@ -1,9 +1,15 @@
 const Database = require("better-sqlite3");
 const path = require("path");
+const fs = require("fs");
 
-const db = new Database(
-  path.join(__dirname, "../../storage/ecoconnect.db")
-);
+const dbPath = path.join(__dirname, "../../storage/ecoconnect.db");
+const dbDir = path.dirname(dbPath);
+
+if (!fs.existsSync(dbDir)) {
+  fs.mkdirSync(dbDir, { recursive: true });
+}
+
+const db = new Database(dbPath);
 
 // DETECTIONS TABLE
 db.exec(`
@@ -23,6 +29,33 @@ CREATE TABLE IF NOT EXISTS rewards (
   reward_minutes INTEGER,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+`);
+
+// SESSIONS TABLE
+db.exec(`
+  CREATE TABLE IF NOT EXISTS sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_token TEXT NOT NULL UNIQUE,
+    client_mac TEXT,
+    client_ip TEXT,
+    status TEXT DEFAULT 'PENDING',
+    credits INTEGER DEFAULT 0,
+    started_at DATETIME,
+    expires_at DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+`);
+
+// SESSION INDEXES
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_sessions_session_token 
+  ON sessions (session_token);
+
+  CREATE INDEX IF NOT EXISTS idx_sessions_client_mac 
+  ON sessions (client_mac);
+
+  CREATE INDEX IF NOT EXISTS idx_sessions_created_at 
+  ON sessions (created_at);
 `);
 
 module.exports = db;
