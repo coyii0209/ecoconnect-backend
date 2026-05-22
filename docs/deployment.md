@@ -35,6 +35,32 @@
 
 ## Running the Backend
 
+### One-Command Deploy Helper
+
+Use the included script from project root:
+
+```bash
+./deploy.sh dev
+```
+
+This will:
+- optionally pull latest code (if `GIT_PULL=1`)
+- create `.env` from `.env.example` if missing
+- run `npm install`
+- start backend in dev mode
+
+For Linux/systemd deployment:
+
+```bash
+./deploy.sh prod
+```
+
+Optional with repository update:
+
+```bash
+GIT_PULL=1 ./deploy.sh prod
+```
+
 ### Development
 ```bash
 npm run dev
@@ -79,3 +105,27 @@ Expected response:
 - **Service fails to start**: Check logs with `journalctl -u ecoconnect-backend -n 50`
 - **Database locked**: Ensure only one instance is running. Check for orphaned processes.
 - **Port 3000 in use**: Change `PORT` in `.env` or kill conflicting process.
+
+## Avoid GitHub Username/Token Prompts
+
+If `GIT_PULL=1` asks for GitHub username/token, switch your remote to SSH and use a key.
+
+1. Generate key (if missing):
+   ```bash
+   ssh-keygen -t ed25519 -C "your-email@example.com"
+   ```
+2. Add public key to GitHub:
+   ```bash
+   cat ~/.ssh/id_ed25519.pub
+   ```
+   Copy it into GitHub -> Settings -> SSH and GPG keys.
+3. Change remote to SSH:
+   ```bash
+   git remote set-url origin git@github.com:<owner>/<repo>.git
+   ```
+4. Test:
+   ```bash
+   ssh -T git@github.com
+   ```
+
+This removes repeated username/token prompts in deploy scripts.
