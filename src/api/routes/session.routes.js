@@ -3,6 +3,7 @@ const {
   openSession,
   creditSession,
   closeSession,
+  closeAllSessions,
   getSession
 } = require("../../services/session.service");
 const hotspot = require("../../services/hotspot.service");
@@ -84,6 +85,16 @@ router.post("/close", async (req, res) => {
 
     res.json(success({ closed: true }));
   } catch (e) {
+    res.status(500).json(error(e.message));
+  }
+});
+
+router.post("/close-all", async (req, res) => {
+  try {
+    const result = await closeAllSessions();
+    res.json(success({ closed: true, ...result }));
+  } catch (e) {
+    console.error("[SESSION_ROUTE] /close-all error", e);
     res.status(500).json(error(e.message));
   }
 });

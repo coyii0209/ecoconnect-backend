@@ -3,6 +3,8 @@ const { parseDbTimestamp } = require("../utils/time");
 const hotspot = require("./hotspot.service");
 
 const HOTSPOT_STRICT = process.env.HOTSPOT_STRICT === "1";
+const SESSION_REVOKE_SUPPLEMENT_THRESHOLD_MS = 5 * 60 * 1000;
+const sessionExpiryTimers = new Map();
 
 function runHotspotAction(actionName, actionFn) {
   try {
@@ -15,6 +17,95 @@ function runHotspotAction(actionName, actionFn) {
     }
     return { ok: false, error };
   }
+}
+
+function clearSessionExpiryTimer(sessionToken) {
+  const existingTimer = sessionExpiryTimers.get(sessionToken);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+    sessionExpiryTimers.delete(sessionToken);
+    console.log("[SESSION] Cleared scheduled expiry timer", { sessionToken });
+  }
+}
+
+function getRemainingMsFromSession(session) {
+  if (!session) return 0;
+
+  const started = parseDbTimestamp(session.started_at);
+  if (!Number.isFinite(started)) {
+    return Math.max(0, (session.credits || 0) * 1000);
+  }
+
+  const elapsedMs = Date.now() - started;
+  const remainingMs = Math.max(0, (session.credits || 0) * 1000 - elapsedMs);
+  return remainingMs;
+}
+
+async function scheduleSessionExpiry(sessionToken, remainingMs, options = {}) {
+  const normalizedRemainingMs = Math.max(0, Math.floor(remainingMs || 0));
+  const { source = "SCHEDULE" } = options;
+
+  if (!sessionToken) return { scheduled: false, reason: "NO_SESSION_TOKEN" };
+
+  clearSessionExpiryTimer(sessionToken);
+
+  if (normalizedRemainingMs === 0) {
+    console.log("[SESSION] Immediate expiry requested", { sessionToken, source });
+    await expireSession(sessionToken, { source });
+    return { scheduled: false, reason: "ALREADY_EXPIRED" };
+  }
+
+  if (normalizedRemainingMs >= SESSION_REVOKE_SUPPLEMENT_THRESHOLD_MS) {
+    return {
+      scheduled: false,
+      reason: "ABOVE_THRESHOLD",
+      remainingMs: normalizedRemainingMs
+    };
+  }
+
+  console.log("[SESSION] Scheduled expiry timer", {
+    sessionToken,
+    source,
+    remainingMs: normalizedRemainingMs
+  });
+
+  const timer = setTimeout(async () => {
+    try {
+      await expireSession(sessionToken, { source });
+    } catch (error) {
+      console.error("[SESSION] Scheduled expiry failed", {
+        sessionToken,
+        source,
+        message: error.message
+      });
+    } finally {
+      clearSessionExpiryTimer(sessionToken);
+    }
+  }, normalizedRemainingMs);
+
+  if (typeof timer.unref === "function") {
+    timer.unref();
+  }
+
+  sessionExpiryTimers.set(sessionToken, timer);
+
+  return {
+    scheduled: true,
+    remainingMs: normalizedRemainingMs,
+    source
+  };
+}
+
+async function scheduleSessionExpiryFromSession(session, options = {}) {
+  if (!session?.session_token) return { scheduled: false, reason: "NO_SESSION_TOKEN" };
+
+  if (session.status !== "ACTIVE") {
+    clearSessionExpiryTimer(session.session_token);
+    return { scheduled: false, reason: "NOT_ACTIVE" };
+  }
+
+  const remainingMs = getRemainingMsFromSession(session);
+  return scheduleSessionExpiry(session.session_token, remainingMs, options);
 }
 
 function parseOpenSessionInput(input) {
@@ -54,6 +145,60 @@ async function upsertSessionNetworkIdentity(sessionToken, clientMac, clientIp) {
         client_ip = COALESCE(?, client_ip)
     WHERE session_token = ?
   `, [normalizedMac || null, normalizedIp || null, sessionToken]);
+}
+
+async function expireSession(sessionToken, options = {}) {
+  const { source = "MANUAL" } = options;
+
+  await db.ready();
+  clearSessionExpiryTimer(sessionToken);
+
+  await db.transaction(async () => {
+    const session = await db.get(`
+      SELECT * FROM sessions WHERE session_token = ?
+    `, [sessionToken]);
+
+    if (!session) throw new Error("Session not found");
+
+    await db.run(`
+      UPDATE sessions
+      SET status = 'EXPIRED',
+          credits = 0,
+          ended_at = CURRENT_TIMESTAMP
+      WHERE session_token = ?
+    `, [sessionToken]);
+
+    if (session.client_mac) {
+      console.log("[SESSION] Expire path hotpot revoke", {
+        sessionToken,
+        source,
+        clientMac: session.client_mac,
+        clientIp: session.client_ip || null
+      });
+
+      const revokeResult = runHotspotAction("REVOKE", () => {
+        hotspot.revokeAccess(session.client_mac);
+      });
+
+      await db.run(`
+        INSERT INTO hotspot_events (device_mac, action)
+        VALUES (?, ?)
+      `, [session.client_mac, revokeResult.ok ? `REVOKE_${source}` : `REVOKE_${source}_FAILED`]);
+
+      if (!revokeResult.ok) {
+        console.warn("[SESSION] Hotspot revoke failed during expire", {
+          sessionToken,
+          source,
+          clientMac: session.client_mac
+        });
+      }
+    } else {
+      console.warn("[SESSION] Expire called without client_mac", {
+        sessionToken,
+        source
+      });
+    }
+  });
 }
 
 // -------------------------
@@ -102,6 +247,7 @@ async function openSession(input) {
     const existingSession = await getSession(existing.session_token);
     if (existingSession?.status === "ACTIVE") {
       console.log("[SESSION] Reusing existing active session", { sessionToken: existing.session_token });
+      await scheduleSessionExpiryFromSession(existingSession, { source: "OPEN" });
       return existingSession;
     }
   }
@@ -126,7 +272,9 @@ async function openSession(input) {
     resolvedFromIp: Boolean(resolvedMac)
   });
 
-  return await getSession(sessionToken);
+  const session = await getSession(sessionToken);
+  await scheduleSessionExpiryFromSession(session, { source: "OPEN" });
+  return session;
 }
 
 // -------------------------
@@ -161,19 +309,26 @@ async function getSession(sessionToken) {
 
   // Auto-expire: write back to DB so status reflects reality
   if (remaining === 0 && session.status === "ACTIVE" && session.credits > 0) {
-    await db.run(`
-      UPDATE sessions
-      SET status = 'EXPIRED', credits = 0, ended_at = CURRENT_TIMESTAMP
-      WHERE session_token = ?
-    `, [sessionToken]);
+    await expireSession(sessionToken, { source: "AUTO_READ" });
 
-    return {
+    const expiredSession = {
       ...session,
       status: "EXPIRED",
       credits: 0,
       remaining: 0,
       isActive: false
     };
+
+    clearSessionExpiryTimer(sessionToken);
+    return expiredSession;
+  }
+
+  if (session.status === "ACTIVE") {
+    await scheduleSessionExpiryFromSession({
+      ...session,
+      remaining,
+      isActive: true
+    }, { source: "READ" });
   }
 
   return {
@@ -328,6 +483,9 @@ async function creditSession(sessionToken, seconds) {
       });
     }
   });
+
+  const updatedSession = await getSession(sessionToken);
+  await scheduleSessionExpiryFromSession(updatedSession, { source: "CREDIT" });
 }
 
 // -------------------------
@@ -368,45 +526,74 @@ async function consumeSession(sessionToken, seconds) {
 // -------------------------
 async function closeSession(sessionToken) {
   console.log("[SESSION] closeSession called", { sessionToken });
+  await expireSession(sessionToken, { source: "MANUAL" });
+}
+
+async function closeAllSessions() {
   await db.ready();
 
-  await db.transaction(async () => {
-    const session = await db.get(`
-      SELECT * FROM sessions WHERE session_token = ?
-    `, [sessionToken]);
+  const activeSessions = await db.all(`
+    SELECT session_token
+    FROM sessions
+    WHERE status = 'ACTIVE'
+    ORDER BY id ASC
+  `);
 
-    if (!session) throw new Error("Session not found");
+  let expiredCount = 0;
 
-    await db.run(`
-      UPDATE sessions
-      SET status = 'EXPIRED',
-          ended_at = CURRENT_TIMESTAMP
-      WHERE session_token = ?
-    `, [sessionToken]);
-
-    if (session.client_mac) {
-      console.log("[SESSION] Hotspot revoke path", { sessionToken, clientMac: session.client_mac });
-      const revokeResult = runHotspotAction("REVOKE", () => {
-        hotspot.revokeAccess(session.client_mac);
+  for (const row of activeSessions) {
+    try {
+      await expireSession(row.session_token, { source: "BULK" });
+      expiredCount += 1;
+    } catch (error) {
+      console.error("[SESSION] closeAllSessions failed for session", {
+        sessionToken: row.session_token,
+        message: error.message
       });
+    }
+  }
 
-      await db.run(`
-        INSERT INTO hotspot_events (device_mac, action)
-        VALUES (?, 'REVOKE')
-      `, [session.client_mac]);
+  console.log("[SESSION] closeAllSessions complete", {
+    totalActive: activeSessions.length,
+    expiredCount
+  });
 
-      if (!revokeResult.ok) {
-        console.warn("[SESSION] Hotspot revoke failed (non-strict mode)", {
-          sessionToken,
-          clientMac: session.client_mac
-        });
-        await db.run(`
-          INSERT INTO hotspot_events (device_mac, action)
-          VALUES (?, 'REVOKE_FAILED')
-        `, [session.client_mac]);
+  return {
+    totalActive: activeSessions.length,
+    expiredCount
+  };
+}
+
+async function primeExpiringSessions() {
+  await db.ready();
+
+  const activeSessions = await db.all(`
+    SELECT *
+    FROM sessions
+    WHERE status = 'ACTIVE'
+  `);
+
+  let scheduledCount = 0;
+
+  for (const session of activeSessions) {
+    const remainingMs = getRemainingMsFromSession(session);
+    if (remainingMs > 0 && remainingMs < SESSION_REVOKE_SUPPLEMENT_THRESHOLD_MS) {
+      const result = await scheduleSessionExpiry(session.session_token, remainingMs, { source: "PRIME" });
+      if (result.scheduled) {
+        scheduledCount += 1;
       }
     }
+  }
+
+  console.log("[SESSION] primeExpiringSessions complete", {
+    totalActive: activeSessions.length,
+    scheduledCount
   });
+
+  return {
+    totalActive: activeSessions.length,
+    scheduledCount
+  };
 }
 
 // -------------------------
@@ -424,5 +611,10 @@ module.exports = {
   creditSession,
   consumeSession,
   closeSession,
+  closeAllSessions,
+  expireSession,
+  primeExpiringSessions,
+  scheduleSessionExpiryFromSession,
+  clearSessionExpiryTimer,
   getSession,
 };

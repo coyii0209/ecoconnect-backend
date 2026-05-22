@@ -3,6 +3,7 @@ const app = require("./app");
 const http = require("http");
 const { Server } = require("socket.io");
 const { setProcessStateEmitter, getProcessState } = require("./services/process.service");
+const { expireSession, primeExpiringSessions } = require("./services/session.service");
 const db = require("./database/sqlite");
 
 const PORT = process.env.PORT || 3000;
@@ -35,19 +36,32 @@ const SESSION_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 async function sweepExpiredSessions() {
   try {
     await db.ready();
-    const result = await db.run(`
-      UPDATE sessions
-      SET status = 'EXPIRED',
-          credits = 0,
-          ended_at = CURRENT_TIMESTAMP
+    const expiredSessions = await db.all(`
+      SELECT session_token
+      FROM sessions
       WHERE status = 'ACTIVE'
         AND credits >= 0
         AND (strftime('%s', CURRENT_TIMESTAMP) - strftime('%s', started_at)) >= credits
     `);
 
-    if (result.changes > 0) {
-      console.log(`[SESSION SWEEP] Expired ${result.changes} session(s)`);
+    if (expiredSessions.length === 0) {
+      return;
     }
+
+    for (const row of expiredSessions) {
+      try {
+        await expireSession(row.session_token, { source: "SWEEP" });
+      } catch (error) {
+        console.error("[SESSION SWEEP] Failed to expire session", {
+          sessionToken: row.session_token,
+          message: error.message
+        });
+      }
+    }
+
+    console.log(`[SESSION SWEEP] Expired ${expiredSessions.length} session(s)`);
+
+    await primeExpiringSessions();
   } catch (err) {
     console.error("[SESSION SWEEP] Error:", err.message);
   }
@@ -57,5 +71,9 @@ setInterval(sweepExpiredSessions, SESSION_SWEEP_INTERVAL_MS);
 // Run once at startup to catch any sessions that expired while the server was down
 sweepExpiredSessions().catch((err) => {
   console.error("[SESSION SWEEP] Startup error:", err.message);
+});
+
+primeExpiringSessions().catch((err) => {
+  console.error("[SESSION PRIME] Startup error:", err.message);
 });
 console.log("SERVER.JS RUNNING");
