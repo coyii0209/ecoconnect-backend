@@ -10,15 +10,17 @@ if [[ ! -f "package.json" ]]; then
   exit 1
 fi
 
-if ! command -v node >/dev/null 2>&1; then
-  echo "[ERROR] Node.js is not installed. Install Node.js v18+ first."
-  exit 1
-fi
+require_runtime() {
+  if ! command -v node >/dev/null 2>&1; then
+    echo "[ERROR] Node.js is not installed. Install Node.js v18+ first."
+    exit 1
+  fi
 
-if ! command -v npm >/dev/null 2>&1; then
-  echo "[ERROR] npm is not installed."
-  exit 1
-fi
+  if ! command -v pnpm >/dev/null 2>&1; then
+    echo "[ERROR] pnpm is not installed. Install via: npm i -g pnpm"
+    exit 1
+  fi
+}
 
 update_code() {
   if [[ "${GIT_PULL:-0}" != "1" ]]; then
@@ -46,12 +48,12 @@ ensure_env() {
 
 install_deps() {
   echo "[STEP] Installing dependencies"
-  npm install
+  pnpm install
 }
 
 run_dev() {
   echo "[STEP] Starting backend in dev mode"
-  npm run dev
+  pnpm run dev
 }
 
 deploy_systemd() {
@@ -90,7 +92,7 @@ Usage:
   ./deploy.sh prod
 
 Modes:
-  dev   Install deps, ensure .env, and run npm run dev
+  dev   Install deps, ensure .env, and run pnpm run dev
   prod  Install deps, ensure .env, and deploy/restart systemd units (Linux)
 
 Optional:
@@ -101,12 +103,14 @@ EOF
 
 case "$MODE" in
   dev)
+    require_runtime
     update_code
     ensure_env
     install_deps
     run_dev
     ;;
   prod)
+    require_runtime
     update_code
     ensure_env
     install_deps

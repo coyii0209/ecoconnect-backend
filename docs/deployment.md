@@ -46,7 +46,7 @@ Use the included script from project root:
 This will:
 - optionally pull latest code (if `GIT_PULL=1`)
 - create `.env` from `.env.example` if missing
-- run `npm install`
+- run `pnpm install`
 - start backend in dev mode
 
 For Linux/systemd deployment:
