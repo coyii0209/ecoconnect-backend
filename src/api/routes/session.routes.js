@@ -5,6 +5,7 @@ const {
   closeSession,
   getSession
 } = require("../../services/session.service");
+const hotspot = require("../../services/hotspot.service");
 
 const router = express.Router();
 
@@ -16,18 +17,39 @@ function error(message) {
   return { ok: false, error: message };
 }
 
+function extractClientIp(req) {
+  const forwarded = req.headers["x-forwarded-for"];
+  const candidate = Array.isArray(forwarded)
+    ? forwarded[0]
+    : typeof forwarded === "string"
+      ? forwarded.split(",")[0]
+      : req.ip || req.socket?.remoteAddress || "";
+
+  return hotspot.normalizeIp(candidate);
+}
+
 // OPEN SESSION
 router.post("/open", async (req, res) => {
   try {
-    const { clientMac } = req.body;
+    const { clientMac } = req.body || {};
+    const clientIp = extractClientIp(req);
 
-    if (!clientMac) {
-      return res.status(400).json(error("clientMac is required"));
-    }
+    console.log("[SESSION_ROUTE] /open", {
+      forwardedFor: req.headers["x-forwarded-for"] || null,
+      reqIp: req.ip || null,
+      socketRemoteAddress: req.socket?.remoteAddress || null,
+      resolvedClientIp: clientIp || null,
+      providedClientMac: clientMac || null
+    });
 
-    const session = await openSession(clientMac);
+    const session = await openSession({
+      clientMac,
+      clientIp
+    });
+
     res.json(success(session));
   } catch (e) {
+    console.error("[SESSION_ROUTE] /open error", e);
     res.status(500).json(error(e.message));
   }
 });

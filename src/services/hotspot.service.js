@@ -7,6 +7,18 @@ function normalizeMac(mac) {
   return String(mac || "").trim().toLowerCase();
 }
 
+function normalizeIp(ip) {
+  const raw = String(ip || "").trim();
+  if (!raw) return "";
+  if (raw.startsWith("::ffff:")) return raw.slice(7);
+  if (raw === "::1") return "127.0.0.1";
+  return raw;
+}
+
+function isSafeIpValue(ip) {
+  return /^[0-9a-fA-F:.]+$/.test(ip);
+}
+
 function runCommand(command, allowFailure = false) {
   console.log("[HOTSPOT] Executing command", { command, allowFailure, enforce: SHOULD_ENFORCE });
 
@@ -93,6 +105,65 @@ function getIpFromMac(mac) {
   throw new Error(`No IP found for MAC ${mac}. Seen entries: ${arpCandidates.length}`);
 }
 
+function getMacFromIp(ip) {
+  const normalizedIp = normalizeIp(ip);
+  console.log("[HOTSPOT] Resolving MAC for IP", { ip, normalizedIp });
+
+  if (!normalizedIp) {
+    throw new Error("IP address is required");
+  }
+
+  if (!isSafeIpValue(normalizedIp)) {
+    throw new Error("Invalid IP format");
+  }
+
+  try {
+    const neighRaw = execSync(`ip neigh show ${normalizedIp}`, { encoding: "utf8", stdio: "pipe" });
+    const lines = neighRaw.split("\n");
+
+    for (const line of lines) {
+      if (!line) continue;
+      const parts = line.trim().split(/\s+/);
+      if (parts.length < 5) continue;
+
+      const rowIp = normalizeIp(parts[0]);
+      const lladdrIndex = parts.indexOf("lladdr");
+      if (lladdrIndex === -1 || !parts[lladdrIndex + 1]) continue;
+
+      const rowMac = normalizeMac(parts[lladdrIndex + 1]);
+      if (rowIp === normalizedIp && rowMac) {
+        console.log("[HOTSPOT] IP resolved via ip neigh", { ip: normalizedIp, mac: rowMac });
+        return rowMac;
+      }
+    }
+  } catch (error) {
+    console.warn("[HOTSPOT] Could not read 'ip neigh show <ip>' output", error.message);
+  }
+
+  try {
+    const arpRaw = execSync("arp -an", { encoding: "utf8", stdio: "pipe" });
+    const lines = arpRaw.split("\n");
+
+    for (const line of lines) {
+      if (!line) continue;
+
+      const match = line.match(/\(([^)]+)\).*?(([0-9a-f]{2}:){5}[0-9a-f]{2})/i);
+      if (!match) continue;
+
+      const rowIp = normalizeIp(match[1]);
+      const rowMac = normalizeMac(match[2]);
+      if (rowIp === normalizedIp && rowMac) {
+        console.log("[HOTSPOT] IP resolved via arp -an", { ip: normalizedIp, mac: rowMac });
+        return rowMac;
+      }
+    }
+  } catch (error) {
+    console.warn("[HOTSPOT] Could not read 'arp -an' output", error.message);
+  }
+
+  throw new Error(`No MAC found for IP ${normalizedIp}`);
+}
+
 function allowClientIp(clientIp) {
   console.log("[HOTSPOT] Allow client IP", { clientIp, setName: ALLOWED_SET_NAME });
   runCommand(`sudo ipset add -exist ${ALLOWED_SET_NAME} ${clientIp}`);
@@ -153,5 +224,8 @@ module.exports = {
   createAccess,
   extendAccess,
   revokeAccess,
-  getIpFromMac
+  getIpFromMac,
+  getMacFromIp,
+  normalizeIp,
+  normalizeMac
 };

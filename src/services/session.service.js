@@ -17,23 +17,88 @@ function runHotspotAction(actionName, actionFn) {
   }
 }
 
+function parseOpenSessionInput(input) {
+  if (typeof input === "string") {
+    return {
+      clientMacHint: hotspot.normalizeMac(input),
+      clientIp: null
+    };
+  }
+
+  return {
+    clientMacHint: hotspot.normalizeMac(input?.clientMac || ""),
+    clientIp: hotspot.normalizeIp(input?.clientIp || "")
+  };
+}
+
+function resolveMacFromIp(clientIp) {
+  if (!clientIp) return null;
+
+  try {
+    return hotspot.getMacFromIp(clientIp);
+  } catch (error) {
+    console.warn("[SESSION] Unable to resolve MAC from IP", { clientIp, message: error.message });
+    return null;
+  }
+}
+
+async function upsertSessionNetworkIdentity(sessionToken, clientMac, clientIp) {
+  if (!sessionToken) return;
+
+  const normalizedMac = hotspot.normalizeMac(clientMac);
+  const normalizedIp = hotspot.normalizeIp(clientIp);
+
+  await db.run(`
+    UPDATE sessions
+    SET client_mac = COALESCE(?, client_mac),
+        client_ip = COALESCE(?, client_ip)
+    WHERE session_token = ?
+  `, [normalizedMac || null, normalizedIp || null, sessionToken]);
+}
+
 // -------------------------
 // OPEN SESSION
 // -------------------------
-async function openSession(clientMac) {
-  console.log("[SESSION] openSession called", { clientMac });
+async function openSession(input) {
+  const { clientMacHint, clientIp } = parseOpenSessionInput(input);
+  const resolvedMac = resolveMacFromIp(clientIp);
+  const effectiveMac = resolvedMac || clientMacHint || null;
+
+  console.log("[SESSION] openSession called", {
+    clientMacHint,
+    clientIp,
+    resolvedMac,
+    effectiveMac
+  });
+
   await db.ready();
 
-  const existing = await db.get(`
-    SELECT session_token
-    FROM sessions
-    WHERE client_mac = ? AND status = 'ACTIVE'
-    ORDER BY started_at DESC, id DESC
-    LIMIT 1
-  `, [clientMac]);
+  let existing = null;
+
+  if (effectiveMac) {
+    existing = await db.get(`
+      SELECT session_token
+      FROM sessions
+      WHERE client_mac = ? AND status = 'ACTIVE'
+      ORDER BY started_at DESC, id DESC
+      LIMIT 1
+    `, [effectiveMac]);
+  }
+
+  if (!existing && clientIp) {
+    existing = await db.get(`
+      SELECT session_token
+      FROM sessions
+      WHERE client_ip = ? AND status = 'ACTIVE'
+      ORDER BY started_at DESC, id DESC
+      LIMIT 1
+    `, [clientIp]);
+  }
 
   if (existing?.session_token) {
     console.log("[SESSION] Found existing active session candidate", { sessionToken: existing.session_token });
+    await upsertSessionNetworkIdentity(existing.session_token, effectiveMac, clientIp);
+
     const existingSession = await getSession(existing.session_token);
     if (existingSession?.status === "ACTIVE") {
       console.log("[SESSION] Reusing existing active session", { sessionToken: existing.session_token });
@@ -47,13 +112,19 @@ async function openSession(clientMac) {
     INSERT INTO sessions (
       session_token,
       client_mac,
+      client_ip,
       status,
       credits,
       started_at
-    ) VALUES (?, ?, 'ACTIVE', 0, CURRENT_TIMESTAMP)
-  `, [sessionToken, clientMac]);
+    ) VALUES (?, ?, ?, 'ACTIVE', 0, CURRENT_TIMESTAMP)
+  `, [sessionToken, effectiveMac, clientIp || null]);
 
-  console.log("[SESSION] Created new session", { sessionToken, clientMac });
+  console.log("[SESSION] Created new session", {
+    sessionToken,
+    clientMac: effectiveMac,
+    clientIp,
+    resolvedFromIp: Boolean(resolvedMac)
+  });
 
   return await getSession(sessionToken);
 }
@@ -149,29 +220,44 @@ async function creditSession(sessionToken, seconds) {
       ) VALUES (?, 'CREDIT', ?, ?)
     `, [session.id, seconds, JSON.stringify({ source: "bottle" })]);
 
+    // Try to enrich missing/stale MAC from client_ip before hotspot operations.
+    let sessionClientMac = session.client_mac ? hotspot.normalizeMac(session.client_mac) : null;
+    const sessionClientIp = hotspot.normalizeIp(session.client_ip);
+
+    if (sessionClientIp) {
+      const resolvedMac = resolveMacFromIp(sessionClientIp);
+      if (resolvedMac && resolvedMac !== sessionClientMac) {
+        console.log("[SESSION] Updating session MAC from IP lookup", {
+          sessionToken,
+          previousMac: sessionClientMac,
+          resolvedMac,
+          clientIp: sessionClientIp
+        });
+
+        await upsertSessionNetworkIdentity(sessionToken, resolvedMac, sessionClientIp);
+        sessionClientMac = resolvedMac;
+      }
+    }
+
     // Wire hotspot integration: extend or create access
-    if (session.client_mac) {
+    if (sessionClientMac) {
       const device = await db.get(`
         SELECT * FROM devices WHERE mac_address = ?
-      `, [session.client_mac]);
+      `, [sessionClientMac]);
 
       if (device && device.hotspot_enabled) {
         // Device exists and is enabled: extend access
-        console.log("[SESSION] Hotspot extend path", { sessionToken, clientMac: session.client_mac });
+        console.log("[SESSION] Hotspot extend path", { sessionToken, clientMac: sessionClientMac });
         const extendResult = runHotspotAction("EXTEND", () => {
-          hotspot.extendAccess(session.client_mac, Math.ceil(seconds / 60));
+          hotspot.extendAccess(sessionClientMac, Math.ceil(seconds / 60));
         });
 
         if (extendResult.ok && extendResult.result?.ip) {
-          await db.run(`
-            UPDATE sessions
-            SET client_ip = ?
-            WHERE session_token = ?
-          `, [extendResult.result.ip, sessionToken]);
+          await upsertSessionNetworkIdentity(sessionToken, sessionClientMac, extendResult.result.ip);
 
           console.log("[SESSION] Updated session client_ip from EXTEND", {
             sessionToken,
-            clientMac: session.client_mac,
+            clientMac: sessionClientMac,
             clientIp: extendResult.result.ip
           });
         }
@@ -179,39 +265,35 @@ async function creditSession(sessionToken, seconds) {
         await db.run(`
           INSERT INTO hotspot_events (device_mac, action, duration_minutes)
           VALUES (?, 'EXTEND', ?)
-        `, [session.client_mac, Math.ceil(seconds / 60)]);
+        `, [sessionClientMac, Math.ceil(seconds / 60)]);
 
         if (!extendResult.ok) {
           console.warn("[SESSION] Hotspot extend failed (non-strict mode)", {
             sessionToken,
-            clientMac: session.client_mac
+            clientMac: sessionClientMac
           });
           await db.run(`
             INSERT INTO hotspot_events (device_mac, action, duration_minutes)
             VALUES (?, 'EXTEND_FAILED', ?)
-          `, [session.client_mac, Math.ceil(seconds / 60)]);
+          `, [sessionClientMac, Math.ceil(seconds / 60)]);
         }
       } else {
         // First time: create access
         console.log("[SESSION] Hotspot create path", {
           sessionToken,
-          clientMac: session.client_mac,
+          clientMac: sessionClientMac,
           hasDeviceRecord: Boolean(device)
         });
         const createResult = runHotspotAction("CREATE", () => {
-          hotspot.createAccess(session.client_mac, Math.ceil(seconds / 60));
+          hotspot.createAccess(sessionClientMac, Math.ceil(seconds / 60));
         });
 
         if (createResult.ok && createResult.result?.ip) {
-          await db.run(`
-            UPDATE sessions
-            SET client_ip = ?
-            WHERE session_token = ?
-          `, [createResult.result.ip, sessionToken]);
+          await upsertSessionNetworkIdentity(sessionToken, sessionClientMac, createResult.result.ip);
 
           console.log("[SESSION] Updated session client_ip from CREATE", {
             sessionToken,
-            clientMac: session.client_mac,
+            clientMac: sessionClientMac,
             clientIp: createResult.result.ip
           });
         }
@@ -220,25 +302,30 @@ async function creditSession(sessionToken, seconds) {
           await db.run(`
             INSERT INTO devices (mac_address, hotspot_enabled)
             VALUES (?, 1)
-          `, [session.client_mac]);
+          `, [sessionClientMac]);
         }
 
         await db.run(`
           INSERT INTO hotspot_events (device_mac, action, duration_minutes)
           VALUES (?, 'CREATE', ?)
-        `, [session.client_mac, Math.ceil(seconds / 60)]);
+        `, [sessionClientMac, Math.ceil(seconds / 60)]);
 
         if (!createResult.ok) {
           console.warn("[SESSION] Hotspot create failed (non-strict mode)", {
             sessionToken,
-            clientMac: session.client_mac
+            clientMac: sessionClientMac
           });
           await db.run(`
             INSERT INTO hotspot_events (device_mac, action, duration_minutes)
             VALUES (?, 'CREATE_FAILED', ?)
-          `, [session.client_mac, Math.ceil(seconds / 60)]);
+          `, [sessionClientMac, Math.ceil(seconds / 60)]);
         }
       }
+    } else {
+      console.warn("[SESSION] No MAC available for hotspot action", {
+        sessionToken,
+        clientIp: sessionClientIp || null
+      });
     }
   });
 }

@@ -14,6 +14,10 @@ function resolveRouter(routeModule) {
 
 const app = express();
 
+if (process.env.TRUST_PROXY === "1") {
+	app.set("trust proxy", true);
+}
+
 // Middleware
 app.use(cors());
 app.use(helmet());
