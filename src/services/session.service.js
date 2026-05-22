@@ -49,6 +49,23 @@ function getSession(sessionToken) {
 
   console.log(`Session ${sessionToken}: started at ${started}, elapsed ${elapsed}s, remaining ${remaining}s`);
 
+  // Auto-expire: write back to DB so status reflects reality
+  if (remaining === 0 && session.status === "ACTIVE" && session.credits > 0) {
+    db.prepare(`
+      UPDATE sessions
+      SET status = 'EXPIRED', credits = 0, ended_at = CURRENT_TIMESTAMP
+      WHERE session_token = ?
+    `).run(sessionToken);
+
+    return {
+      ...session,
+      status: "EXPIRED",
+      credits: 0,
+      remaining: 0,
+      isActive: false
+    };
+  }
+
   return {
     ...session,
     remaining,
