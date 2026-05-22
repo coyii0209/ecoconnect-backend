@@ -22,7 +22,7 @@ router.get("/status", (req, res) => {
   res.json(success(getProcessState()));
 });
 
-router.post("/start", (req, res) => {
+router.post("/start", async (req, res) => {
   try {
     const { sessionToken } = req.body;
 
@@ -30,7 +30,7 @@ router.post("/start", (req, res) => {
       return res.status(400).json(failure("sessionToken is required"));
     }
 
-    const result = startRequest(sessionToken);
+    const result = await startRequest(sessionToken);
 
     if (!result.ok) {
       return res.status(409).json(failure(result.reason, result.state));
@@ -82,9 +82,9 @@ router.post("/admin/servo", (req, res) => {
   }
 });
 
-router.post("/admin/ir-trigger", (req, res) => {
+router.post("/admin/ir-trigger", async (req, res) => {
   try {
-    const result = triggerIrReward();
+    const result = await triggerIrReward();
 
     if (!result.ok) {
       return res.status(409).json(failure(result.reason, result.state));

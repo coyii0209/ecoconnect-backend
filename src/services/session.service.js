@@ -5,17 +5,19 @@ const hotspot = require("./hotspot.service");
 // -------------------------
 // OPEN SESSION
 // -------------------------
-function openSession(clientMac) {
-  const existing = db.prepare(`
+async function openSession(clientMac) {
+  await db.ready();
+
+  const existing = await db.get(`
     SELECT session_token
     FROM sessions
     WHERE client_mac = ? AND status = 'ACTIVE'
     ORDER BY started_at DESC, id DESC
     LIMIT 1
-  `).get(clientMac);
+  `, [clientMac]);
 
   if (existing?.session_token) {
-    const existingSession = getSession(existing.session_token);
+    const existingSession = await getSession(existing.session_token);
     if (existingSession?.status === "ACTIVE") {
       return existingSession;
     }
@@ -23,7 +25,7 @@ function openSession(clientMac) {
 
   const sessionToken = generateToken();
 
-  db.prepare(`
+  await db.run(`
     INSERT INTO sessions (
       session_token,
       client_mac,
@@ -31,19 +33,21 @@ function openSession(clientMac) {
       credits,
       started_at
     ) VALUES (?, ?, 'ACTIVE', 0, CURRENT_TIMESTAMP)
-  `).run(sessionToken, clientMac);
+  `, [sessionToken, clientMac]);
 
-  return getSession(sessionToken);
+  return await getSession(sessionToken);
 }
 
 // -------------------------
 // GET SESSION (SOURCE OF TRUTH)
 // -------------------------
-function getSession(sessionToken) {
-  const session = db.prepare(`
+async function getSession(sessionToken) {
+  await db.ready();
+
+  const session = await db.get(`
     SELECT * FROM sessions
     WHERE session_token = ?
-  `).get(sessionToken);
+  `, [sessionToken]);
 
   if (!session) return null;
 
@@ -66,11 +70,11 @@ function getSession(sessionToken) {
 
   // Auto-expire: write back to DB so status reflects reality
   if (remaining === 0 && session.status === "ACTIVE" && session.credits > 0) {
-    db.prepare(`
+    await db.run(`
       UPDATE sessions
       SET status = 'EXPIRED', credits = 0, ended_at = CURRENT_TIMESTAMP
       WHERE session_token = ?
-    `).run(sessionToken);
+    `, [sessionToken]);
 
     return {
       ...session,
@@ -91,119 +95,111 @@ function getSession(sessionToken) {
 // -------------------------
 // CREDIT SESSION (TOP-UP ONLY)
 // -------------------------
-function creditSession(sessionToken, seconds) {
-  const tx = db.transaction(() => {
-    const session = db.prepare(`
+async function creditSession(sessionToken, seconds) {
+  await db.ready();
+
+  await db.transaction(async () => {
+    const session = await db.get(`
       SELECT * FROM sessions WHERE session_token = ?
-    `).get(sessionToken);
+    `, [sessionToken]);
 
     if (!session) throw new Error("Session not found");
 
     const newCredits = session.credits + seconds;
 
-    db.prepare(`
+    await db.run(`
       UPDATE sessions
       SET credits = ?
       WHERE session_token = ?
-    `).run(newCredits, sessionToken);
+    `, [newCredits, sessionToken]);
 
-    db.prepare(`
+    await db.run(`
       INSERT INTO transactions (
         session_id,
         type,
         amount,
         metadata
       ) VALUES (?, 'CREDIT', ?, ?)
-    `).run(
-      session.id,
-      seconds,
-      JSON.stringify({ source: "bottle" })
-    );
+    `, [session.id, seconds, JSON.stringify({ source: "bottle" })]);
 
     // Wire hotspot integration: extend or create access
     if (session.client_mac) {
-      const device = db.prepare(`
+      const device = await db.get(`
         SELECT * FROM devices WHERE mac_address = ?
-      `).get(session.client_mac);
+      `, [session.client_mac]);
 
       if (device && device.hotspot_enabled) {
         // Device exists and is enabled: extend access
         hotspot.extendAccess(session.client_mac, Math.ceil(seconds / 60));
-        db.prepare(`
+        await db.run(`
           INSERT INTO hotspot_events (device_mac, action, duration_minutes)
           VALUES (?, 'EXTEND', ?)
-        `).run(session.client_mac, Math.ceil(seconds / 60));
+        `, [session.client_mac, Math.ceil(seconds / 60)]);
       } else {
         // First time: create access
         hotspot.createAccess(session.client_mac, Math.ceil(seconds / 60));
         if (!device) {
-          db.prepare(`
+          await db.run(`
             INSERT INTO devices (mac_address, hotspot_enabled)
             VALUES (?, 1)
-          `).run(session.client_mac);
+          `, [session.client_mac]);
         }
-        db.prepare(`
+        await db.run(`
           INSERT INTO hotspot_events (device_mac, action, duration_minutes)
           VALUES (?, 'CREATE', ?)
-        `).run(session.client_mac, Math.ceil(seconds / 60));
+        `, [session.client_mac, Math.ceil(seconds / 60)]);
       }
     }
   });
-
-  tx();
 }
 
 // -------------------------
 // CONSUME SESSION (ADMIN ONLY)
 // -------------------------
 // NOTE: NOT USED FOR REAL-TIME BILLING IN MODEL 1
-function consumeSession(sessionToken, seconds) {
-  const tx = db.transaction(() => {
-    const session = db.prepare(`
+async function consumeSession(sessionToken, seconds) {
+  await db.ready();
+
+  await db.transaction(async () => {
+    const session = await db.get(`
       SELECT * FROM sessions WHERE session_token = ?
-    `).get(sessionToken);
+    `, [sessionToken]);
 
     if (!session) throw new Error("Session not found");
 
     const newCredits = Math.max(0, session.credits - seconds);
 
-    db.prepare(`
+    await db.run(`
       UPDATE sessions
       SET credits = ?
       WHERE session_token = ?
-    `).run(newCredits, sessionToken);
+    `, [newCredits, sessionToken]);
 
-    db.prepare(`
+    await db.run(`
       INSERT INTO transactions (
         session_id,
         type,
         amount,
         metadata
       ) VALUES (?, 'CONSUME', ?, ?)
-    `).run(
-      session.id,
-      seconds,
-      JSON.stringify({ reason: "manual_adjustment" })
-    );
+    `, [session.id, seconds, JSON.stringify({ reason: "manual_adjustment" })]);
   });
-
-  tx();
 }
 
 // -------------------------
 // CLOSE SESSION
 // -------------------------
-function closeSession(sessionToken) {
-  const tx = db.transaction(() => {
-    db.prepare(`
+async function closeSession(sessionToken) {
+  await db.ready();
+
+  await db.transaction(async () => {
+    await db.run(`
       UPDATE sessions
       SET status = 'EXPIRED',
           ended_at = CURRENT_TIMESTAMP
       WHERE session_token = ?
-    `).run(sessionToken);
+    `, [sessionToken]);
   });
-
-  tx();
 }
 
 // -------------------------

@@ -3,9 +3,10 @@ const router = express.Router();
 const db = require("../../database/sqlite");
 
 // Health check route
-router.get("/", (req, res) => {
+router.get("/", async (req, res) => {
   try {
-    const row = db.prepare("SELECT 1 as test").get();
+    await db.ready();
+    const row = await db.get("SELECT 1 as test");
 
     res.json({
       status: "online",

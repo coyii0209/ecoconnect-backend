@@ -17,7 +17,7 @@ function error(message) {
 }
 
 // OPEN SESSION
-router.post("/open", (req, res) => {
+router.post("/open", async (req, res) => {
   try {
     const { clientMac } = req.body;
 
@@ -25,7 +25,7 @@ router.post("/open", (req, res) => {
       return res.status(400).json(error("clientMac is required"));
     }
 
-    const session = openSession(clientMac);
+    const session = await openSession(clientMac);
     res.json(success(session));
   } catch (e) {
     res.status(500).json(error(e.message));
@@ -33,7 +33,7 @@ router.post("/open", (req, res) => {
 });
 
 // ADD CREDITS
-router.post("/credit", (req, res) => {
+router.post("/credit", async (req, res) => {
   try {
     const { sessionToken, seconds } = req.body;
 
@@ -41,16 +41,16 @@ router.post("/credit", (req, res) => {
       return res.status(400).json(error("Invalid input"));
     }
 
-    creditSession(sessionToken, seconds);
+    await creditSession(sessionToken, seconds);
 
-    res.json(success(getSession(sessionToken)));
+    res.json(success(await getSession(sessionToken)));
   } catch (e) {
     res.status(500).json(error(e.message));
   }
 });
 
 // CLOSE SESSION
-router.post("/close", (req, res) => {
+router.post("/close", async (req, res) => {
   try {
     const { sessionToken } = req.body;
 
@@ -58,7 +58,7 @@ router.post("/close", (req, res) => {
       return res.status(400).json(error("sessionToken is required"));
     }
 
-    closeSession(sessionToken);
+    await closeSession(sessionToken);
 
     res.json(success({ closed: true }));
   } catch (e) {
@@ -67,9 +67,9 @@ router.post("/close", (req, res) => {
 });
 
 // GET SESSION
-router.get("/:token", (req, res) => {
+router.get("/:token", async (req, res) => {
   try {
-    const session = getSession(req.params.token);
+    const session = await getSession(req.params.token);
 
     if (!session) {
       return res.status(404).json(error("Session not found"));

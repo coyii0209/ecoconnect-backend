@@ -11,7 +11,7 @@ function wait(ms) {
 }
 
 async function printState(label, token) {
-  const session = getSession(token);
+  const session = await getSession(token);
 
   const now = Date.now();
   const started = parseDbTimestamp(session.started_at);
@@ -33,14 +33,14 @@ async function printState(label, token) {
   console.log("==============================\n");
 
   // 1. Open session
-  const session = openSession("AA:BB:CC:DD:EE:FF");
+  const session = await openSession("AA:BB:CC:DD:EE:FF");
   const token = session.session_token;
 
   await printState("Immediately after open", token);
 
   // 2. Credit session
   console.log("\n🍾 Adding 120 seconds credit");
-  creditSession(token, 120);
+  await creditSession(token, 120);
 
   await printState("After credit added", token);
 
@@ -62,7 +62,7 @@ async function printState(label, token) {
 
   // 4. Close session
   console.log("\n🛑 Closing session");
-  closeSession(token);
+  await closeSession(token);
 
   await printState("After close", token);
 

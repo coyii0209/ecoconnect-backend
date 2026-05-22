@@ -8,7 +8,9 @@ const REWARD_MAP = {
 const DEFAULT_REWARD = parseInt(process.env.REWARD_DEFAULT || "0");
 const MODE = process.env.REWARD_MODE || "allow_zero";
 
-function processReward(detectionId, label) {
+async function processReward(detectionId, label) {
+  await db.ready();
+
   let minutes = REWARD_MAP[label];
 
   // unknown label handling
@@ -25,10 +27,10 @@ function processReward(detectionId, label) {
   }
 
   // save reward
-  db.prepare(`
+  await db.run(`
     INSERT INTO rewards (detection_id, reward_minutes)
     VALUES (?, ?)
-  `).run(detectionId, minutes);
+  `, [detectionId, minutes]);
 
   return {
     minutes,

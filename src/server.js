@@ -32,9 +32,10 @@ server.listen(PORT, () => {
 // Runs every 5 minutes — no need for the user to return to the portal
 const SESSION_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 
-function sweepExpiredSessions() {
+async function sweepExpiredSessions() {
   try {
-    const result = db.prepare(`
+    await db.ready();
+    const result = await db.run(`
       UPDATE sessions
       SET status = 'EXPIRED',
           credits = 0,
@@ -42,7 +43,7 @@ function sweepExpiredSessions() {
       WHERE status = 'ACTIVE'
         AND credits >= 0
         AND (strftime('%s', CURRENT_TIMESTAMP) - strftime('%s', started_at)) >= credits
-    `).run();
+    `);
 
     if (result.changes > 0) {
       console.log(`[SESSION SWEEP] Expired ${result.changes} session(s)`);
@@ -54,5 +55,7 @@ function sweepExpiredSessions() {
 
 setInterval(sweepExpiredSessions, SESSION_SWEEP_INTERVAL_MS);
 // Run once at startup to catch any sessions that expired while the server was down
-sweepExpiredSessions();
+sweepExpiredSessions().catch((err) => {
+  console.error("[SESSION SWEEP] Startup error:", err.message);
+});
 console.log("SERVER.JS RUNNING");

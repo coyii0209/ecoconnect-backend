@@ -1,4 +1,4 @@
-const Database = require("better-sqlite3");
+const sqlite3 = require("sqlite3").verbose();
 const path = require("path");
 const fs = require("fs");
 
@@ -9,10 +9,67 @@ if (!fs.existsSync(dbDir)) {
   fs.mkdirSync(dbDir, { recursive: true });
 }
 
-const db = new Database(dbPath);
+const db = new sqlite3.Database(dbPath);
 
-// DETECTIONS TABLE
-db.exec(`
+function run(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.run(sql, params, function onRun(err) {
+      if (err) return reject(err);
+      resolve({
+        lastInsertRowid: this.lastID,
+        changes: this.changes,
+      });
+    });
+  });
+}
+
+function get(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.get(sql, params, (err, row) => {
+      if (err) return reject(err);
+      resolve(row);
+    });
+  });
+}
+
+function all(sql, params = []) {
+  return new Promise((resolve, reject) => {
+    db.all(sql, params, (err, rows) => {
+      if (err) return reject(err);
+      resolve(rows);
+    });
+  });
+}
+
+function exec(sql) {
+  return new Promise((resolve, reject) => {
+    db.exec(sql, (err) => {
+      if (err) return reject(err);
+      resolve();
+    });
+  });
+}
+
+async function transaction(work) {
+  await run("BEGIN IMMEDIATE TRANSACTION");
+  try {
+    const result = await work();
+    await run("COMMIT");
+    return result;
+  } catch (err) {
+    try {
+      await run("ROLLBACK");
+    } catch {
+      // Ignore rollback failures; preserve original error.
+    }
+    throw err;
+  }
+}
+
+let initPromise;
+
+async function initialize() {
+  await exec(`
 CREATE TABLE IF NOT EXISTS detections (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   label TEXT,
@@ -21,8 +78,7 @@ CREATE TABLE IF NOT EXISTS detections (
 );
 `);
 
-// REWARDS TABLE
-db.exec(`
+  await exec(`
 CREATE TABLE IF NOT EXISTS rewards (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   detection_id INTEGER,
@@ -31,8 +87,7 @@ CREATE TABLE IF NOT EXISTS rewards (
 );
 `);
 
-// SESSIONS TABLE (remote schema preserved)
-db.exec(`
+  await exec(`
   CREATE TABLE IF NOT EXISTS sessions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_token TEXT NOT NULL UNIQUE,
@@ -46,39 +101,33 @@ db.exec(`
 );
 `);
 
-// MIGRATION: Add ended_at column if it doesn't exist
-try {
-  const checkColumn = db.prepare(`
-    PRAGMA table_info(sessions)
-  `).all();
-  
-  const hasEndedAt = checkColumn.some(col => col.name === 'ended_at');
-  
-  if (!hasEndedAt) {
-    db.exec(`
-      ALTER TABLE sessions 
-      ADD COLUMN ended_at DATETIME
-    `);
-    console.log('[DB] Migrated: Added ended_at column to sessions table');
-  }
-} catch (err) {
-  console.error('[DB] Migration error:', err.message);
-}
+  try {
+    const columns = await all("PRAGMA table_info(sessions)");
+    const hasEndedAt = columns.some((col) => col.name === "ended_at");
 
-// SESSION INDEXES
-db.exec(`
-  CREATE INDEX IF NOT EXISTS idx_sessions_session_token 
+    if (!hasEndedAt) {
+      await exec(`
+        ALTER TABLE sessions
+        ADD COLUMN ended_at DATETIME
+      `);
+      console.log("[DB] Migrated: Added ended_at column to sessions table");
+    }
+  } catch (err) {
+    console.error("[DB] Migration error:", err.message);
+  }
+
+  await exec(`
+  CREATE INDEX IF NOT EXISTS idx_sessions_session_token
   ON sessions (session_token);
 
-  CREATE INDEX IF NOT EXISTS idx_sessions_client_mac 
+  CREATE INDEX IF NOT EXISTS idx_sessions_client_mac
   ON sessions (client_mac);
 
-  CREATE INDEX IF NOT EXISTS idx_sessions_created_at 
+  CREATE INDEX IF NOT EXISTS idx_sessions_created_at
   ON sessions (created_at);
 `);
 
-// TRANSACTIONS TABLE
-db.exec(`
+  await exec(`
   CREATE TABLE IF NOT EXISTS transactions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id INTEGER,
@@ -86,28 +135,25 @@ db.exec(`
     amount INTEGER,
     metadata TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    
-    FOREIGN KEY (session_id) 
+
+    FOREIGN KEY (session_id)
     REFERENCES sessions(id)
 );
 `);
 
-// TRANSACTIONS INDEXES
-db.exec(`
-  CREATE INDEX IF NOT EXISTS idx_transactions_created_at 
+  await exec(`
+  CREATE INDEX IF NOT EXISTS idx_transactions_created_at
   ON transactions (created_at);
 `);
 
-// SCHEMA VERSION (for migrations)
-db.exec(`
+  await exec(`
 CREATE TABLE IF NOT EXISTS schema_version (
   version INTEGER PRIMARY KEY,
   applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 `);
 
-// DEVICES TABLE (tracks hotspot-capable devices)
-db.exec(`
+  await exec(`
 CREATE TABLE IF NOT EXISTS devices (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   mac_address TEXT UNIQUE NOT NULL,
@@ -116,8 +162,7 @@ CREATE TABLE IF NOT EXISTS devices (
 );
 `);
 
-// HOTSPOT EVENTS TABLE (logs access grants/revokes)
-db.exec(`
+  await exec(`
 CREATE TABLE IF NOT EXISTS hotspot_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   device_mac TEXT,
@@ -127,8 +172,7 @@ CREATE TABLE IF NOT EXISTS hotspot_events (
 );
 `);
 
-// Additional local tables (preserve user's changes)
-db.exec(`
+  await exec(`
 CREATE TABLE IF NOT EXISTS access_control (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   mac_address TEXT UNIQUE,
@@ -137,7 +181,7 @@ CREATE TABLE IF NOT EXISTS access_control (
 );
 `);
 
-db.exec(`
+  await exec(`
 CREATE TABLE IF NOT EXISTS processed_events (
   event_id TEXT PRIMARY KEY,
   camera_id TEXT,
@@ -145,7 +189,7 @@ CREATE TABLE IF NOT EXISTS processed_events (
 );
 `);
 
-db.exec(`
+  await exec(`
 CREATE TABLE IF NOT EXISTS reject_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   event_id TEXT,
@@ -154,5 +198,20 @@ CREATE TABLE IF NOT EXISTS reject_logs (
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 `);
+}
 
-module.exports = db;
+function ready() {
+  if (!initPromise) {
+    initPromise = initialize();
+  }
+  return initPromise;
+}
+
+module.exports = {
+  run,
+  get,
+  all,
+  exec,
+  transaction,
+  ready,
+};

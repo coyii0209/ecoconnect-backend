@@ -48,8 +48,8 @@ function isLocked() {
   return processState.requestActive || processState.cameraActive || processState.servoGateOpened;
 }
 
-function startRequest(sessionToken) {
-  const session = getSession(sessionToken);
+async function startRequest(sessionToken) {
+  const session = await getSession(sessionToken);
 
   if (!session) {
     return {
@@ -189,7 +189,7 @@ function setServo(opened) {
   };
 }
 
-function triggerIrReward() {
+async function triggerIrReward() {
   if (processState.cooldownUntil > Date.now()) {
     return {
       ok: false,
@@ -206,13 +206,13 @@ function triggerIrReward() {
     };
   }
 
-  const insertDetection = db.prepare(`
+  await db.ready();
+
+  const result = await db.run(`
     INSERT INTO detections (label, confidence, created_at)
     VALUES (?, ?, datetime('now'))
-  `);
-
-  const result = insertDetection.run(DETECTION_LABEL, DETECTION_CONFIDENCE);
-  const reward = rewardService.processReward(result.lastInsertRowid, DETECTION_LABEL);
+  `, [DETECTION_LABEL, DETECTION_CONFIDENCE]);
+  const reward = await rewardService.processReward(result.lastInsertRowid, DETECTION_LABEL);
 
   if (reward.rejected || reward.minutes <= 0) {
     processState = {
@@ -233,7 +233,7 @@ function triggerIrReward() {
     };
   }
 
-  creditSession(processState.sessionToken, reward.minutes * 60);
+  await creditSession(processState.sessionToken, reward.minutes * 60);
 
   processState = {
     ...initialState(),
