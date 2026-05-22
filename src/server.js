@@ -4,6 +4,7 @@ const http = require("http");
 const { Server } = require("socket.io");
 const { setProcessStateEmitter, getProcessState } = require("./services/process.service");
 const { expireSession, primeExpiringSessions } = require("./services/session.service");
+const hotspot = require("./services/hotspot.service");
 const db = require("./database/sqlite");
 
 const PORT = process.env.PORT || 3000;
@@ -25,12 +26,6 @@ io.on("connection", (socket) => {
   });
 });
 
-server.listen(PORT, () => {
-  console.log("EcoConnect backend running on port", PORT);
-});
-
-// Background sweep: expire sessions whose credits have run out
-// Runs every 5 minutes — no need for the user to return to the portal
 const SESSION_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 
 async function sweepExpiredSessions() {
@@ -67,13 +62,38 @@ async function sweepExpiredSessions() {
   }
 }
 
-setInterval(sweepExpiredSessions, SESSION_SWEEP_INTERVAL_MS);
-// Run once at startup to catch any sessions that expired while the server was down
-sweepExpiredSessions().catch((err) => {
-  console.error("[SESSION SWEEP] Startup error:", err.message);
-});
+async function cleanupAllowedClientsOnStartup() {
+  try {
+    console.log("[HOTSPOT STARTUP] Revoking all currently allowed client IPs");
+    const result = hotspot.revokeAllAllowedClientIps();
+    console.log("[HOTSPOT STARTUP] Cleanup complete", result);
+  } catch (error) {
+    console.error("[HOTSPOT STARTUP] Cleanup error:", error.message);
+  }
+}
 
-primeExpiringSessions().catch((err) => {
-  console.error("[SESSION PRIME] Startup error:", err.message);
+async function bootstrap() {
+  await cleanupAllowedClientsOnStartup();
+
+  // Background sweep: expire sessions whose credits have run out
+  // Runs every 5 minutes — no need for the user to return to the portal
+  setInterval(sweepExpiredSessions, SESSION_SWEEP_INTERVAL_MS);
+
+  // Run once at startup to catch any sessions that expired while the server was down
+  sweepExpiredSessions().catch((err) => {
+    console.error("[SESSION SWEEP] Startup error:", err.message);
+  });
+
+  primeExpiringSessions().catch((err) => {
+    console.error("[SESSION PRIME] Startup error:", err.message);
+  });
+
+  server.listen(PORT, () => {
+    console.log("EcoConnect backend running on port", PORT);
+  });
+}
+
+bootstrap().catch((err) => {
+  console.error("[SERVER] Bootstrap error:", err.message);
 });
 console.log("SERVER.JS RUNNING");

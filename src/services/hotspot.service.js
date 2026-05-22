@@ -179,6 +179,91 @@ function blockClientIp(clientIp) {
   }
 }
 
+function listAllowedClientIps() {
+  console.log("[HOTSPOT] Listing allowed client IPs", { setName: ALLOWED_SET_NAME });
+
+  if (!SHOULD_ENFORCE) {
+    console.log("[HOTSPOT] DRY RUN: ipset list", { setName: ALLOWED_SET_NAME });
+    return [];
+  }
+
+  let output = "";
+
+  try {
+    output = execSync(`sudo ipset list ${ALLOWED_SET_NAME}`, { encoding: "utf8", stdio: "pipe" });
+  } catch (error) {
+    console.warn("[HOTSPOT] Could not list allowed client IPs", {
+      setName: ALLOWED_SET_NAME,
+      message: error.message
+    });
+    return [];
+  }
+
+  const lines = output.split("\n");
+  const ips = [];
+  let inMembers = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    if (trimmed === "Members:") {
+      inMembers = true;
+      continue;
+    }
+
+    if (!inMembers) continue;
+
+    const member = normalizeIp(trimmed);
+    if (member && isSafeIpValue(member)) {
+      ips.push(member);
+    }
+  }
+
+  console.log("[HOTSPOT] Allowed client IPs found", { count: ips.length, ips });
+  return ips;
+}
+
+function revokeAccessByIp(clientIp) {
+  const normalizedIp = normalizeIp(clientIp);
+  if (!normalizedIp) {
+    throw new Error("IP address is required");
+  }
+
+  console.log("[HOTSPOT] REVOKE ACCESS BY IP ->", normalizedIp);
+  blockClientIp(normalizedIp);
+
+  return {
+    success: true,
+    action: "revokeAccessByIp",
+    ip: normalizedIp
+  };
+}
+
+function revokeAllAllowedClientIps() {
+  const ips = listAllowedClientIps();
+  let revokedCount = 0;
+
+  for (const ip of ips) {
+    try {
+      revokeAccessByIp(ip);
+      revokedCount += 1;
+    } catch (error) {
+      console.warn("[HOTSPOT] Failed to revoke allowed client IP", { ip, message: error.message });
+    }
+  }
+
+  console.log("[HOTSPOT] revokeAllAllowedClientIps complete", {
+    total: ips.length,
+    revokedCount
+  });
+
+  return {
+    total: ips.length,
+    revokedCount
+  };
+}
+
 function createAccess(mac, minutes) {
   const ip = getIpFromMac(mac);
   allowClientIp(ip);
@@ -227,5 +312,8 @@ module.exports = {
   getIpFromMac,
   getMacFromIp,
   normalizeIp,
-  normalizeMac
+  normalizeMac,
+  listAllowedClientIps,
+  revokeAccessByIp,
+  revokeAllAllowedClientIps
 };
