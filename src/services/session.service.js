@@ -193,12 +193,27 @@ async function closeSession(sessionToken) {
   await db.ready();
 
   await db.transaction(async () => {
+    const session = await db.get(`
+      SELECT * FROM sessions WHERE session_token = ?
+    `, [sessionToken]);
+
+    if (!session) throw new Error("Session not found");
+
     await db.run(`
       UPDATE sessions
       SET status = 'EXPIRED',
           ended_at = CURRENT_TIMESTAMP
       WHERE session_token = ?
     `, [sessionToken]);
+
+    if (session.client_mac) {
+      hotspot.revokeAccess(session.client_mac);
+
+      await db.run(`
+        INSERT INTO hotspot_events (device_mac, action)
+        VALUES (?, 'REVOKE')
+      `, [session.client_mac]);
+    }
   });
 }
 
