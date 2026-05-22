@@ -50,9 +50,7 @@ async function scheduleSessionExpiry(sessionToken, remainingMs, options = {}) {
   clearSessionExpiryTimer(sessionToken);
 
   if (normalizedRemainingMs === 0) {
-    console.log("[SESSION] Immediate expiry requested", { sessionToken, source });
-    await expireSession(sessionToken, { source });
-    return { scheduled: false, reason: "ALREADY_EXPIRED" };
+    return { scheduled: false, reason: "NO_REMAINING_TIME" };
   }
 
   if (normalizedRemainingMs >= SESSION_REVOKE_SUPPLEMENT_THRESHOLD_MS) {
@@ -105,6 +103,11 @@ async function scheduleSessionExpiryFromSession(session, options = {}) {
   }
 
   const remainingMs = getRemainingMsFromSession(session);
+  if (remainingMs <= 0) {
+    clearSessionExpiryTimer(session.session_token);
+    return { scheduled: false, reason: "NO_REMAINING_TIME" };
+  }
+
   return scheduleSessionExpiry(session.session_token, remainingMs, options);
 }
 
@@ -321,14 +324,6 @@ async function getSession(sessionToken) {
 
     clearSessionExpiryTimer(sessionToken);
     return expiredSession;
-  }
-
-  if (session.status === "ACTIVE") {
-    await scheduleSessionExpiryFromSession({
-      ...session,
-      remaining,
-      isActive: true
-    }, { source: "READ" });
   }
 
   return {
