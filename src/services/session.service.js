@@ -6,8 +6,8 @@ const HOTSPOT_STRICT = process.env.HOTSPOT_STRICT === "1";
 
 function runHotspotAction(actionName, actionFn) {
   try {
-    actionFn();
-    return { ok: true };
+    const result = actionFn();
+    return { ok: true, result };
   } catch (error) {
     console.error(`[HOTSPOT] ${actionName} failed:`, error.message);
     if (HOTSPOT_STRICT) {
@@ -162,6 +162,20 @@ async function creditSession(sessionToken, seconds) {
           hotspot.extendAccess(session.client_mac, Math.ceil(seconds / 60));
         });
 
+        if (extendResult.ok && extendResult.result?.ip) {
+          await db.run(`
+            UPDATE sessions
+            SET client_ip = ?
+            WHERE session_token = ?
+          `, [extendResult.result.ip, sessionToken]);
+
+          console.log("[SESSION] Updated session client_ip from EXTEND", {
+            sessionToken,
+            clientMac: session.client_mac,
+            clientIp: extendResult.result.ip
+          });
+        }
+
         await db.run(`
           INSERT INTO hotspot_events (device_mac, action, duration_minutes)
           VALUES (?, 'EXTEND', ?)
@@ -187,6 +201,20 @@ async function creditSession(sessionToken, seconds) {
         const createResult = runHotspotAction("CREATE", () => {
           hotspot.createAccess(session.client_mac, Math.ceil(seconds / 60));
         });
+
+        if (createResult.ok && createResult.result?.ip) {
+          await db.run(`
+            UPDATE sessions
+            SET client_ip = ?
+            WHERE session_token = ?
+          `, [createResult.result.ip, sessionToken]);
+
+          console.log("[SESSION] Updated session client_ip from CREATE", {
+            sessionToken,
+            clientMac: session.client_mac,
+            clientIp: createResult.result.ip
+          });
+        }
 
         if (createResult.ok && !device) {
           await db.run(`

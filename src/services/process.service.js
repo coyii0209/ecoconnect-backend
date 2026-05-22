@@ -37,19 +37,21 @@ function setProcessStateEmitter(emitter) {
   emitProcessState = typeof emitter === "function" ? emitter : () => {};
 }
 
-function notify(reason) {
+function notify(reason, context = {}) {
   console.log("[PROCESS] State update", {
     reason,
-    requestId: processState.requestId,
-    sessionToken: processState.sessionToken,
+    requestId: context.requestId || processState.requestId,
+    sessionToken: context.sessionToken || processState.sessionToken,
     yoloDecision: processState.yoloDecision,
     servoGateOpened: processState.servoGateOpened,
-    cooldownUntil: processState.cooldownUntil
+    cooldownUntil: processState.cooldownUntil,
+    context
   });
 
   emitProcessState({
     reason,
-    state: getProcessState()
+    state: getProcessState(),
+    context
   });
 }
 
@@ -288,9 +290,13 @@ async function triggerIrReward() {
     };
   }
 
-  await creditSession(processState.sessionToken, reward.minutes * 60);
+  const completedRequestId = processState.requestId;
+  const completedSessionToken = processState.sessionToken;
+
+  await creditSession(completedSessionToken, reward.minutes * 60);
   console.log("[PROCESS] Session credited", {
-    sessionToken: processState.sessionToken,
+    requestId: completedRequestId,
+    sessionToken: completedSessionToken,
     rewardMinutes: reward.minutes,
     rewardSeconds: reward.minutes * 60
   });
@@ -303,12 +309,17 @@ async function triggerIrReward() {
     pipelineStatus: "Credit added!"
   };
 
-  notify("CREDIT_ADDED");
+  notify("CREDIT_ADDED", {
+    requestId: completedRequestId,
+    sessionToken: completedSessionToken
+  });
 
   return {
     ok: true,
     reason: "CREDIT_ADDED",
     rewardMinutes: reward.minutes,
+    requestId: completedRequestId,
+    sessionToken: completedSessionToken,
     state: getProcessState()
   };
 }
