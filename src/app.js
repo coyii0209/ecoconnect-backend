@@ -5,6 +5,7 @@ const morgan = require("morgan");
 
 const healthRoutes = require("./api/routes/health.routes");
 const detectionRoutes = require("./api/routes/detection.routes");
+const processRoutes = require("./api/routes/process.routes");
 const sessionRoutes = require("./api/routes/session.routes");
 
 function resolveRouter(routeModule) {
@@ -22,6 +23,7 @@ app.use(morgan("dev"));
 // Routes
 app.use("/api/health", resolveRouter(healthRoutes));
 app.use("/api/detection", resolveRouter(detectionRoutes));
+app.use("/api/process", resolveRouter(processRoutes));
 app.use("/api/session", resolveRouter(sessionRoutes));
 
 module.exports = app;

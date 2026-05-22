@@ -127,6 +127,23 @@ Acceptance checks:
 - Services restart on failure
 - Boot test starts both services automatically
 
+### B5 - Webhook Server Endpoint
+Owner: Person B
+Estimate: 2h
+Files:
+- src/api/routes/webhook.routes.js
+- src/app.js
+- .env.example
+Deliverables:
+- Add webhook route namespace at /api/webhook
+- Implement POST endpoint for inbound partner/device events
+- Add shared secret verification from env
+- Add structured logging for accepted/rejected webhook calls
+Acceptance checks:
+- Unauthorized webhook calls return 401
+- Valid signed payload is accepted and stored/processed
+- Invalid payload returns 400 with consistent error JSON
+
 ## Day 2 - Integration and Reliability
 
 ### A4 - Session Time Worker Hook
@@ -142,7 +159,7 @@ Acceptance checks:
 - Simulated consume loop decrements correctly
 - Expired sessions cannot be credited without reopen policy
 
-### B5 - Mock Hotspot Adapter
+### B6 - Mock Hotspot Adapter
 Owner: Person B
 Estimate: 3h
 Files:
@@ -191,6 +208,7 @@ Detection response:
 ## Definition of Done (Fast Release)
 
 - Detection endpoint is authenticated and idempotent
+- Webhook endpoint is authenticated and validated
 - Session open/credit/consume/close is live
 - Reward assignment updates session time
 - Mock hotspot integration wired
@@ -201,6 +219,7 @@ Detection response:
 
 - npm run dev
 - curl health endpoint
+- curl webhook endpoint (invalid + valid signature)
 - curl detection accepted case
 - curl detection duplicate case
 - curl session open + credit + consume + close

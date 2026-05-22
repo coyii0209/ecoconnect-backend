@@ -47,6 +47,8 @@ function getSession(sessionToken) {
 
   const remaining = Math.max(0, session.credits - elapsed);
 
+  console.log(`Session ${sessionToken}: started at ${started}, elapsed ${elapsed}s, remaining ${remaining}s`);
+
   return {
     ...session,
     remaining,
