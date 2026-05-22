@@ -38,6 +38,15 @@ function setProcessStateEmitter(emitter) {
 }
 
 function notify(reason) {
+  console.log("[PROCESS] State update", {
+    reason,
+    requestId: processState.requestId,
+    sessionToken: processState.sessionToken,
+    yoloDecision: processState.yoloDecision,
+    servoGateOpened: processState.servoGateOpened,
+    cooldownUntil: processState.cooldownUntil
+  });
+
   emitProcessState({
     reason,
     state: getProcessState()
@@ -49,9 +58,11 @@ function isLocked() {
 }
 
 async function startRequest(sessionToken) {
+  console.log("[PROCESS] startRequest called", { sessionToken });
   const session = await getSession(sessionToken);
 
   if (!session) {
+    console.warn("[PROCESS] startRequest rejected: session not found", { sessionToken });
     return {
       ok: false,
       reason: "SESSION_NOT_FOUND",
@@ -60,6 +71,7 @@ async function startRequest(sessionToken) {
   }
 
   if (session.status === "EXPIRED") {
+    console.warn("[PROCESS] startRequest rejected: session expired", { sessionToken });
     return {
       ok: false,
       reason: "SESSION_EXPIRED",
@@ -68,6 +80,10 @@ async function startRequest(sessionToken) {
   }
 
   if (processState.cooldownUntil > Date.now()) {
+    console.warn("[PROCESS] startRequest rejected: cooldown active", {
+      cooldownUntil: processState.cooldownUntil,
+      now: Date.now()
+    });
     return {
       ok: false,
       reason: "COOLDOWN_ACTIVE",
@@ -76,6 +92,11 @@ async function startRequest(sessionToken) {
   }
 
   if (isLocked()) {
+    console.warn("[PROCESS] startRequest rejected: process already active", {
+      requestActive: processState.requestActive,
+      cameraActive: processState.cameraActive,
+      servoGateOpened: processState.servoGateOpened
+    });
     return {
       ok: false,
       reason: "PROCESS_ACTIVE",
@@ -106,7 +127,12 @@ async function startRequest(sessionToken) {
 }
 
 function setDecision(decision) {
+  console.log("[PROCESS] setDecision called", { decision, requestId: processState.requestId });
   if (!processState.requestActive || processState.yoloDecision !== "pending") {
+    console.warn("[PROCESS] setDecision rejected: flow not ready", {
+      requestActive: processState.requestActive,
+      yoloDecision: processState.yoloDecision
+    });
     return {
       ok: false,
       reason: "FLOW_NOT_READY",
@@ -150,8 +176,13 @@ function setDecision(decision) {
 }
 
 function setServo(opened) {
+  console.log("[PROCESS] setServo called", { opened, requestId: processState.requestId });
   if (opened) {
     if (!processState.requestActive || processState.yoloDecision !== "valid") {
+      console.warn("[PROCESS] setServo(open) rejected: flow not ready", {
+        requestActive: processState.requestActive,
+        yoloDecision: processState.yoloDecision
+      });
       return {
         ok: false,
         reason: "FLOW_NOT_READY",
@@ -190,7 +221,18 @@ function setServo(opened) {
 }
 
 async function triggerIrReward() {
+  console.log("[PROCESS] triggerIrReward called", {
+    requestActive: processState.requestActive,
+    yoloDecision: processState.yoloDecision,
+    servoGateOpened: processState.servoGateOpened,
+    hasSessionToken: Boolean(processState.sessionToken)
+  });
+
   if (processState.cooldownUntil > Date.now()) {
+    console.warn("[PROCESS] triggerIrReward rejected: cooldown active", {
+      cooldownUntil: processState.cooldownUntil,
+      now: Date.now()
+    });
     return {
       ok: false,
       reason: "COOLDOWN_ACTIVE",
@@ -199,6 +241,12 @@ async function triggerIrReward() {
   }
 
   if (!processState.requestActive || processState.yoloDecision !== "valid" || !processState.servoGateOpened || !processState.sessionToken) {
+    console.warn("[PROCESS] triggerIrReward rejected: flow not ready", {
+      requestActive: processState.requestActive,
+      yoloDecision: processState.yoloDecision,
+      servoGateOpened: processState.servoGateOpened,
+      hasSessionToken: Boolean(processState.sessionToken)
+    });
     return {
       ok: false,
       reason: "FLOW_NOT_READY",
@@ -212,7 +260,14 @@ async function triggerIrReward() {
     INSERT INTO detections (label, confidence, created_at)
     VALUES (?, ?, datetime('now'))
   `, [DETECTION_LABEL, DETECTION_CONFIDENCE]);
+  console.log("[PROCESS] Detection inserted", {
+    detectionId: result.lastInsertRowid,
+    label: DETECTION_LABEL,
+    confidence: DETECTION_CONFIDENCE
+  });
+
   const reward = await rewardService.processReward(result.lastInsertRowid, DETECTION_LABEL);
+  console.log("[PROCESS] Reward evaluation complete", reward);
 
   if (reward.rejected || reward.minutes <= 0) {
     processState = {
@@ -234,6 +289,11 @@ async function triggerIrReward() {
   }
 
   await creditSession(processState.sessionToken, reward.minutes * 60);
+  console.log("[PROCESS] Session credited", {
+    sessionToken: processState.sessionToken,
+    rewardMinutes: reward.minutes,
+    rewardSeconds: reward.minutes * 60
+  });
 
   processState = {
     ...initialState(),
@@ -254,6 +314,11 @@ async function triggerIrReward() {
 }
 
 function resetProcess() {
+  console.log("[PROCESS] resetProcess called", {
+    previousRequestId: processState.requestId,
+    previousStatus: processState.pipelineStatus
+  });
+
   processState = {
     ...initialState(),
     cooldownUntil: processState.cooldownUntil

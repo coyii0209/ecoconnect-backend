@@ -19,25 +19,30 @@ function failure(message, data) {
 }
 
 router.get("/status", (req, res) => {
+  console.log("[PROCESS_ROUTE] GET /status");
   res.json(success(getProcessState()));
 });
 
 router.post("/start", async (req, res) => {
   try {
     const { sessionToken } = req.body;
+    console.log("[PROCESS_ROUTE] POST /start", { hasSessionToken: Boolean(sessionToken) });
 
     if (!sessionToken) {
+      console.warn("[PROCESS_ROUTE] /start rejected: missing sessionToken");
       return res.status(400).json(failure("sessionToken is required"));
     }
 
     const result = await startRequest(sessionToken);
 
     if (!result.ok) {
+      console.warn("[PROCESS_ROUTE] /start conflict", { reason: result.reason });
       return res.status(409).json(failure(result.reason, result.state));
     }
 
     res.json(success(result));
   } catch (error) {
+    console.error("[PROCESS_ROUTE] /start error", error);
     res.status(500).json(failure(error.message));
   }
 });
@@ -45,19 +50,23 @@ router.post("/start", async (req, res) => {
 router.post("/admin/decision", (req, res) => {
   try {
     const { decision } = req.body;
+    console.log("[PROCESS_ROUTE] POST /admin/decision", { decision });
 
     if (!["valid", "invalid"].includes(decision)) {
+      console.warn("[PROCESS_ROUTE] /admin/decision rejected: invalid decision", { decision });
       return res.status(400).json(failure("decision must be valid or invalid"));
     }
 
     const result = setDecision(decision);
 
     if (!result.ok) {
+      console.warn("[PROCESS_ROUTE] /admin/decision conflict", { reason: result.reason });
       return res.status(409).json(failure(result.reason, result.state));
     }
 
     res.json(success(result));
   } catch (error) {
+    console.error("[PROCESS_ROUTE] /admin/decision error", error);
     res.status(500).json(failure(error.message));
   }
 });
@@ -65,41 +74,50 @@ router.post("/admin/decision", (req, res) => {
 router.post("/admin/servo", (req, res) => {
   try {
     const { opened } = req.body;
+    console.log("[PROCESS_ROUTE] POST /admin/servo", { opened });
 
     if (typeof opened !== "boolean") {
+      console.warn("[PROCESS_ROUTE] /admin/servo rejected: opened must be boolean");
       return res.status(400).json(failure("opened must be boolean"));
     }
 
     const result = setServo(opened);
 
     if (!result.ok) {
+      console.warn("[PROCESS_ROUTE] /admin/servo conflict", { reason: result.reason });
       return res.status(409).json(failure(result.reason, result.state));
     }
 
     res.json(success(result));
   } catch (error) {
+    console.error("[PROCESS_ROUTE] /admin/servo error", error);
     res.status(500).json(failure(error.message));
   }
 });
 
 router.post("/admin/ir-trigger", async (req, res) => {
   try {
+    console.log("[PROCESS_ROUTE] POST /admin/ir-trigger");
     const result = await triggerIrReward();
 
     if (!result.ok) {
+      console.warn("[PROCESS_ROUTE] /admin/ir-trigger conflict", { reason: result.reason });
       return res.status(409).json(failure(result.reason, result.state));
     }
 
     res.json(success(result));
   } catch (error) {
+    console.error("[PROCESS_ROUTE] /admin/ir-trigger error", error);
     res.status(500).json(failure(error.message));
   }
 });
 
 router.post("/reset", (req, res) => {
   try {
+    console.log("[PROCESS_ROUTE] POST /reset");
     res.json(success(resetProcess()));
   } catch (error) {
+    console.error("[PROCESS_ROUTE] /reset error", error);
     res.status(500).json(failure(error.message));
   }
 });

@@ -2,10 +2,26 @@ const db = require("../database/sqlite");
 const { parseDbTimestamp } = require("../utils/time");
 const hotspot = require("./hotspot.service");
 
+const HOTSPOT_STRICT = process.env.HOTSPOT_STRICT === "1";
+
+function runHotspotAction(actionName, actionFn) {
+  try {
+    actionFn();
+    return { ok: true };
+  } catch (error) {
+    console.error(`[HOTSPOT] ${actionName} failed:`, error.message);
+    if (HOTSPOT_STRICT) {
+      throw error;
+    }
+    return { ok: false, error };
+  }
+}
+
 // -------------------------
 // OPEN SESSION
 // -------------------------
 async function openSession(clientMac) {
+  console.log("[SESSION] openSession called", { clientMac });
   await db.ready();
 
   const existing = await db.get(`
@@ -17,8 +33,10 @@ async function openSession(clientMac) {
   `, [clientMac]);
 
   if (existing?.session_token) {
+    console.log("[SESSION] Found existing active session candidate", { sessionToken: existing.session_token });
     const existingSession = await getSession(existing.session_token);
     if (existingSession?.status === "ACTIVE") {
+      console.log("[SESSION] Reusing existing active session", { sessionToken: existing.session_token });
       return existingSession;
     }
   }
@@ -34,6 +52,8 @@ async function openSession(clientMac) {
       started_at
     ) VALUES (?, ?, 'ACTIVE', 0, CURRENT_TIMESTAMP)
   `, [sessionToken, clientMac]);
+
+  console.log("[SESSION] Created new session", { sessionToken, clientMac });
 
   return await getSession(sessionToken);
 }
@@ -96,6 +116,7 @@ async function getSession(sessionToken) {
 // CREDIT SESSION (TOP-UP ONLY)
 // -------------------------
 async function creditSession(sessionToken, seconds) {
+  console.log("[SESSION] creditSession called", { sessionToken, seconds });
   await db.ready();
 
   await db.transaction(async () => {
@@ -106,6 +127,12 @@ async function creditSession(sessionToken, seconds) {
     if (!session) throw new Error("Session not found");
 
     const newCredits = session.credits + seconds;
+    console.log("[SESSION] Applying credits", {
+      sessionToken,
+      previousCredits: session.credits,
+      addSeconds: seconds,
+      newCredits
+    });
 
     await db.run(`
       UPDATE sessions
@@ -130,24 +157,59 @@ async function creditSession(sessionToken, seconds) {
 
       if (device && device.hotspot_enabled) {
         // Device exists and is enabled: extend access
-        hotspot.extendAccess(session.client_mac, Math.ceil(seconds / 60));
+        console.log("[SESSION] Hotspot extend path", { sessionToken, clientMac: session.client_mac });
+        const extendResult = runHotspotAction("EXTEND", () => {
+          hotspot.extendAccess(session.client_mac, Math.ceil(seconds / 60));
+        });
+
         await db.run(`
           INSERT INTO hotspot_events (device_mac, action, duration_minutes)
           VALUES (?, 'EXTEND', ?)
         `, [session.client_mac, Math.ceil(seconds / 60)]);
+
+        if (!extendResult.ok) {
+          console.warn("[SESSION] Hotspot extend failed (non-strict mode)", {
+            sessionToken,
+            clientMac: session.client_mac
+          });
+          await db.run(`
+            INSERT INTO hotspot_events (device_mac, action, duration_minutes)
+            VALUES (?, 'EXTEND_FAILED', ?)
+          `, [session.client_mac, Math.ceil(seconds / 60)]);
+        }
       } else {
         // First time: create access
-        hotspot.createAccess(session.client_mac, Math.ceil(seconds / 60));
-        if (!device) {
+        console.log("[SESSION] Hotspot create path", {
+          sessionToken,
+          clientMac: session.client_mac,
+          hasDeviceRecord: Boolean(device)
+        });
+        const createResult = runHotspotAction("CREATE", () => {
+          hotspot.createAccess(session.client_mac, Math.ceil(seconds / 60));
+        });
+
+        if (createResult.ok && !device) {
           await db.run(`
             INSERT INTO devices (mac_address, hotspot_enabled)
             VALUES (?, 1)
           `, [session.client_mac]);
         }
+
         await db.run(`
           INSERT INTO hotspot_events (device_mac, action, duration_minutes)
           VALUES (?, 'CREATE', ?)
         `, [session.client_mac, Math.ceil(seconds / 60)]);
+
+        if (!createResult.ok) {
+          console.warn("[SESSION] Hotspot create failed (non-strict mode)", {
+            sessionToken,
+            clientMac: session.client_mac
+          });
+          await db.run(`
+            INSERT INTO hotspot_events (device_mac, action, duration_minutes)
+            VALUES (?, 'CREATE_FAILED', ?)
+          `, [session.client_mac, Math.ceil(seconds / 60)]);
+        }
       }
     }
   });
@@ -190,6 +252,7 @@ async function consumeSession(sessionToken, seconds) {
 // CLOSE SESSION
 // -------------------------
 async function closeSession(sessionToken) {
+  console.log("[SESSION] closeSession called", { sessionToken });
   await db.ready();
 
   await db.transaction(async () => {
@@ -207,12 +270,26 @@ async function closeSession(sessionToken) {
     `, [sessionToken]);
 
     if (session.client_mac) {
-      hotspot.revokeAccess(session.client_mac);
+      console.log("[SESSION] Hotspot revoke path", { sessionToken, clientMac: session.client_mac });
+      const revokeResult = runHotspotAction("REVOKE", () => {
+        hotspot.revokeAccess(session.client_mac);
+      });
 
       await db.run(`
         INSERT INTO hotspot_events (device_mac, action)
         VALUES (?, 'REVOKE')
       `, [session.client_mac]);
+
+      if (!revokeResult.ok) {
+        console.warn("[SESSION] Hotspot revoke failed (non-strict mode)", {
+          sessionToken,
+          clientMac: session.client_mac
+        });
+        await db.run(`
+          INSERT INTO hotspot_events (device_mac, action)
+          VALUES (?, 'REVOKE_FAILED')
+        `, [session.client_mac]);
+      }
     }
   });
 }

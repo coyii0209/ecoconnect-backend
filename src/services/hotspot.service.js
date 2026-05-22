@@ -8,6 +8,8 @@ function normalizeMac(mac) {
 }
 
 function runCommand(command, allowFailure = false) {
+  console.log("[HOTSPOT] Executing command", { command, allowFailure, enforce: SHOULD_ENFORCE });
+
   if (!SHOULD_ENFORCE) {
     console.log(`[HOTSPOT] DRY RUN: ${command}`);
     return true;
@@ -18,8 +20,10 @@ function runCommand(command, allowFailure = false) {
       stdio: "pipe",
       encoding: "utf8"
     });
+    console.log("[HOTSPOT] Command success", { command });
     return true;
   } catch (error) {
+    console.warn("[HOTSPOT] Command failed", { command, allowFailure, message: error.message });
     if (!allowFailure) {
       throw error;
     }
@@ -30,6 +34,8 @@ function runCommand(command, allowFailure = false) {
 
 function getIpFromMac(mac) {
   const normalizedMac = normalizeMac(mac);
+  console.log("[HOTSPOT] Resolving IP for MAC", { mac, normalizedMac });
+
   if (!normalizedMac) {
     throw new Error("MAC address is required");
   }
@@ -51,6 +57,7 @@ function getIpFromMac(mac) {
 
       const rowMac = normalizeMac(parts[lladdrIndex + 1]);
       if (rowMac === normalizedMac) {
+        console.log("[HOTSPOT] MAC resolved via ip neigh", { mac: normalizedMac, ip });
         return ip;
       }
 
@@ -73,6 +80,7 @@ function getIpFromMac(mac) {
       const ip = match[1];
       const rowMac = normalizeMac(match[2]);
       if (rowMac === normalizedMac) {
+        console.log("[HOTSPOT] MAC resolved via arp -an", { mac: normalizedMac, ip });
         return ip;
       }
 
@@ -86,11 +94,13 @@ function getIpFromMac(mac) {
 }
 
 function allowClientIp(clientIp) {
+  console.log("[HOTSPOT] Allow client IP", { clientIp, setName: ALLOWED_SET_NAME });
   runCommand(`sudo ipset add -exist ${ALLOWED_SET_NAME} ${clientIp}`);
   runCommand(`sudo iptables -D FORWARD -s ${clientIp} -j DROP`, true);
 }
 
 function blockClientIp(clientIp) {
+  console.log("[HOTSPOT] Block client IP", { clientIp, setName: ALLOWED_SET_NAME });
   runCommand(`sudo ipset del -exist ${ALLOWED_SET_NAME} ${clientIp}`);
   const dropRuleExists = runCommand(`sudo iptables -C FORWARD -s ${clientIp} -j DROP`, true);
   if (!dropRuleExists) {
