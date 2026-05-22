@@ -6,6 +6,21 @@ const hotspot = require("./hotspot.service");
 // OPEN SESSION
 // -------------------------
 function openSession(clientMac) {
+  const existing = db.prepare(`
+    SELECT session_token
+    FROM sessions
+    WHERE client_mac = ? AND status = 'ACTIVE'
+    ORDER BY started_at DESC, id DESC
+    LIMIT 1
+  `).get(clientMac);
+
+  if (existing?.session_token) {
+    const existingSession = getSession(existing.session_token);
+    if (existingSession?.status === "ACTIVE") {
+      return existingSession;
+    }
+  }
+
   const sessionToken = generateToken();
 
   db.prepare(`
