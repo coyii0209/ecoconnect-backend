@@ -1,11 +1,20 @@
 const db = require("../database/sqlite");
 const { getSession, creditSession } = require("./session.service");
 const rewardService = require("./reward.service");
+const createLogger = require("../utils/logger");
 
 const REWARD_COOLDOWN_MS = 5000;
 const DETECTION_LABEL = process.env.REWARD_DETECTION_LABEL || "plastic_bottle";
 const DETECTION_CONFIDENCE = parseFloat(process.env.REWARD_DETECTION_CONFIDENCE || "0.95");
+const DEBUG_PROCESS_LOGS = process.env.DEBUG_PROCESS_LOGS === "1";
+const log = createLogger("PROCESS");
 let emitProcessState = () => {};
+
+function debugLog(message, meta) {
+  if (DEBUG_PROCESS_LOGS) {
+    log.debug(message, meta);
+  }
+}
 
 function initialState() {
   return {
@@ -38,7 +47,7 @@ function setProcessStateEmitter(emitter) {
 }
 
 function notify(reason, context = {}) {
-  console.log("[PROCESS] State update", {
+  debugLog("State update", {
     reason,
     requestId: context.requestId || processState.requestId,
     sessionToken: context.sessionToken || processState.sessionToken,
@@ -60,11 +69,11 @@ function isLocked() {
 }
 
 async function startRequest(sessionToken) {
-  console.log("[PROCESS] startRequest called", { sessionToken });
+  debugLog("startRequest called", { sessionToken });
   const session = await getSession(sessionToken);
 
   if (!session) {
-    console.warn("[PROCESS] startRequest rejected: session not found", { sessionToken });
+    log.warn("startRequest rejected: session not found", { sessionToken });
     return {
       ok: false,
       reason: "SESSION_NOT_FOUND",
@@ -73,7 +82,7 @@ async function startRequest(sessionToken) {
   }
 
   if (session.status === "EXPIRED") {
-    console.warn("[PROCESS] startRequest rejected: session expired", { sessionToken });
+    log.warn("startRequest rejected: session expired", { sessionToken });
     return {
       ok: false,
       reason: "SESSION_EXPIRED",
@@ -82,7 +91,7 @@ async function startRequest(sessionToken) {
   }
 
   if (processState.cooldownUntil > Date.now()) {
-    console.warn("[PROCESS] startRequest rejected: cooldown active", {
+    log.warn("startRequest rejected: cooldown active", {
       cooldownUntil: processState.cooldownUntil,
       now: Date.now()
     });
@@ -94,7 +103,7 @@ async function startRequest(sessionToken) {
   }
 
   if (isLocked()) {
-    console.warn("[PROCESS] startRequest rejected: process already active", {
+    log.warn("startRequest rejected: process already active", {
       requestActive: processState.requestActive,
       cameraActive: processState.cameraActive,
       servoGateOpened: processState.servoGateOpened
@@ -129,9 +138,9 @@ async function startRequest(sessionToken) {
 }
 
 function setDecision(decision) {
-  console.log("[PROCESS] setDecision called", { decision, requestId: processState.requestId });
+  debugLog("setDecision called", { decision, requestId: processState.requestId });
   if (!processState.requestActive || processState.yoloDecision !== "pending") {
-    console.warn("[PROCESS] setDecision rejected: flow not ready", {
+    log.warn("setDecision rejected: flow not ready", {
       requestActive: processState.requestActive,
       yoloDecision: processState.yoloDecision
     });
@@ -178,10 +187,10 @@ function setDecision(decision) {
 }
 
 function setServo(opened) {
-  console.log("[PROCESS] setServo called", { opened, requestId: processState.requestId });
+  debugLog("setServo called", { opened, requestId: processState.requestId });
   if (opened) {
     if (!processState.requestActive || processState.yoloDecision !== "valid") {
-      console.warn("[PROCESS] setServo(open) rejected: flow not ready", {
+      log.warn("setServo(open) rejected: flow not ready", {
         requestActive: processState.requestActive,
         yoloDecision: processState.yoloDecision
       });
@@ -223,7 +232,7 @@ function setServo(opened) {
 }
 
 async function triggerIrReward() {
-  console.log("[PROCESS] triggerIrReward called", {
+  debugLog("triggerIrReward called", {
     requestActive: processState.requestActive,
     yoloDecision: processState.yoloDecision,
     servoGateOpened: processState.servoGateOpened,
@@ -231,7 +240,7 @@ async function triggerIrReward() {
   });
 
   if (processState.cooldownUntil > Date.now()) {
-    console.warn("[PROCESS] triggerIrReward rejected: cooldown active", {
+    log.warn("triggerIrReward rejected: cooldown active", {
       cooldownUntil: processState.cooldownUntil,
       now: Date.now()
     });
@@ -243,7 +252,7 @@ async function triggerIrReward() {
   }
 
   if (!processState.requestActive || processState.yoloDecision !== "valid" || !processState.servoGateOpened || !processState.sessionToken) {
-    console.warn("[PROCESS] triggerIrReward rejected: flow not ready", {
+    log.warn("triggerIrReward rejected: flow not ready", {
       requestActive: processState.requestActive,
       yoloDecision: processState.yoloDecision,
       servoGateOpened: processState.servoGateOpened,
@@ -262,14 +271,14 @@ async function triggerIrReward() {
     INSERT INTO detections (label, confidence, created_at)
     VALUES (?, ?, datetime('now'))
   `, [DETECTION_LABEL, DETECTION_CONFIDENCE]);
-  console.log("[PROCESS] Detection inserted", {
+  debugLog("Detection inserted", {
     detectionId: result.lastInsertRowid,
     label: DETECTION_LABEL,
     confidence: DETECTION_CONFIDENCE
   });
 
   const reward = await rewardService.processReward(result.lastInsertRowid, DETECTION_LABEL);
-  console.log("[PROCESS] Reward evaluation complete", reward);
+  debugLog("Reward evaluation complete", reward);
 
   if (reward.rejected || reward.minutes <= 0) {
     processState = {
@@ -294,7 +303,7 @@ async function triggerIrReward() {
   const completedSessionToken = processState.sessionToken;
 
   await creditSession(completedSessionToken, reward.minutes * 60);
-  console.log("[PROCESS] Session credited", {
+  log.info("Session credited from process", {
     requestId: completedRequestId,
     sessionToken: completedSessionToken,
     rewardMinutes: reward.minutes,
@@ -325,7 +334,7 @@ async function triggerIrReward() {
 }
 
 function resetProcess() {
-  console.log("[PROCESS] resetProcess called", {
+  debugLog("resetProcess called", {
     previousRequestId: processState.requestId,
     previousStatus: processState.pipelineStatus
   });

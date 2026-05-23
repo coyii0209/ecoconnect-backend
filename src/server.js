@@ -1,4 +1,8 @@
 require("dotenv").config();
+const createLogger = require("./utils/logger");
+createLogger.configureGlobalConsole();
+
+const log = createLogger("SERVER");
 const app = require("./app");
 const http = require("http");
 const { Server } = require("socket.io");
@@ -20,9 +24,21 @@ setProcessStateEmitter((payload) => {
 });
 
 io.on("connection", (socket) => {
+  log.info("Client connected", {
+    socketId: socket.id,
+    clientIp: socket.handshake?.address || null
+  });
+
   socket.emit("process:status", {
     reason: "INITIAL_SYNC",
     state: getProcessState()
+  });
+
+  socket.on("disconnect", (reason) => {
+    log.info("Client disconnected", {
+      socketId: socket.id,
+      reason
+    });
   });
 });
 
@@ -47,28 +63,28 @@ async function sweepExpiredSessions() {
       try {
         await expireSession(row.session_token, { source: "SWEEP" });
       } catch (error) {
-        console.error("[SESSION SWEEP] Failed to expire session", {
+        log.error("Session sweep failed for token", {
           sessionToken: row.session_token,
           message: error.message
         });
       }
     }
 
-    console.log(`[SESSION SWEEP] Expired ${expiredSessions.length} session(s)`);
+    log.info("Session sweep complete", { expiredCount: expiredSessions.length });
 
     await primeExpiringSessions();
   } catch (err) {
-    console.error("[SESSION SWEEP] Error:", err.message);
+    log.error("Session sweep error", { message: err.message });
   }
 }
 
 async function cleanupAllowedClientsOnStartup() {
   try {
-    console.log("[HOTSPOT STARTUP] Revoking all currently allowed client IPs");
+    log.info("Hotspot startup cleanup begin");
     const result = hotspot.revokeAllAllowedClientIps();
-    console.log("[HOTSPOT STARTUP] Cleanup complete", result);
+    log.info("Hotspot startup cleanup complete", result);
   } catch (error) {
-    console.error("[HOTSPOT STARTUP] Cleanup error:", error.message);
+    log.error("Hotspot startup cleanup error", { message: error.message });
   }
 }
 
@@ -81,19 +97,18 @@ async function bootstrap() {
 
   // Run once at startup to catch any sessions that expired while the server was down
   sweepExpiredSessions().catch((err) => {
-    console.error("[SESSION SWEEP] Startup error:", err.message);
+    log.error("Session sweep startup error", { message: err.message });
   });
 
   primeExpiringSessions().catch((err) => {
-    console.error("[SESSION PRIME] Startup error:", err.message);
+    log.error("Session prime startup error", { message: err.message });
   });
 
   server.listen(PORT, () => {
-    console.log("EcoConnect backend running on port", PORT);
+    log.info("Backend listening", { port: PORT, logEnabled: createLogger.isEnabled, logLevel: createLogger.level });
   });
 }
 
 bootstrap().catch((err) => {
-  console.error("[SERVER] Bootstrap error:", err.message);
+  log.error("Bootstrap error", { message: err.message });
 });
-console.log("SERVER.JS RUNNING");

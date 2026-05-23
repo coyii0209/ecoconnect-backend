@@ -1,7 +1,9 @@
 const db = require("../database/sqlite");
 const { parseDbTimestamp } = require("../utils/time");
+const createLogger = require("../utils/logger");
 const hotspot = require("./hotspot.service");
 
+const log = createLogger("SESSION");
 const HOTSPOT_STRICT = process.env.HOTSPOT_STRICT === "1";
 const SESSION_REVOKE_SUPPLEMENT_THRESHOLD_MS = 5 * 60 * 1000;
 const sessionExpiryTimers = new Map();
@@ -11,7 +13,7 @@ function runHotspotAction(actionName, actionFn) {
     const result = actionFn();
     return { ok: true, result };
   } catch (error) {
-    console.error(`[HOTSPOT] ${actionName} failed:`, error.message);
+    log.error(`Hotspot ${actionName} failed`, { message: error.message });
     if (HOTSPOT_STRICT) {
       throw error;
     }
@@ -24,7 +26,7 @@ function clearSessionExpiryTimer(sessionToken) {
   if (existingTimer) {
     clearTimeout(existingTimer);
     sessionExpiryTimers.delete(sessionToken);
-    console.log("[SESSION] Cleared scheduled expiry timer", { sessionToken });
+    log.debug("Cleared scheduled expiry timer", { sessionToken });
   }
 }
 
@@ -61,7 +63,7 @@ async function scheduleSessionExpiry(sessionToken, remainingMs, options = {}) {
     };
   }
 
-  console.log("[SESSION] Scheduled expiry timer", {
+  log.debug("Scheduled expiry timer", {
     sessionToken,
     source,
     remainingMs: normalizedRemainingMs
@@ -71,7 +73,7 @@ async function scheduleSessionExpiry(sessionToken, remainingMs, options = {}) {
     try {
       await expireSession(sessionToken, { source });
     } catch (error) {
-      console.error("[SESSION] Scheduled expiry failed", {
+      log.error("Scheduled expiry failed", {
         sessionToken,
         source,
         message: error.message
@@ -131,7 +133,7 @@ function resolveMacFromIp(clientIp) {
   try {
     return hotspot.getMacFromIp(clientIp);
   } catch (error) {
-    console.warn("[SESSION] Unable to resolve MAC from IP", { clientIp, message: error.message });
+    log.warn("Unable to resolve MAC from IP", { clientIp, message: error.message });
     return null;
   }
 }
@@ -172,7 +174,7 @@ async function expireSession(sessionToken, options = {}) {
     `, [sessionToken]);
 
     if (session.client_mac) {
-      console.log("[SESSION] Expire path hotpot revoke", {
+      log.info("Session expired; revoking hotspot access", {
         sessionToken,
         source,
         clientMac: session.client_mac,
@@ -189,14 +191,14 @@ async function expireSession(sessionToken, options = {}) {
       `, [session.client_mac, revokeResult.ok ? `REVOKE_${source}` : `REVOKE_${source}_FAILED`]);
 
       if (!revokeResult.ok) {
-        console.warn("[SESSION] Hotspot revoke failed during expire", {
+        log.warn("Hotspot revoke failed during expire", {
           sessionToken,
           source,
           clientMac: session.client_mac
         });
       }
     } else {
-      console.warn("[SESSION] Expire called without client_mac", {
+      log.warn("Expire called without client_mac", {
         sessionToken,
         source
       });
@@ -211,13 +213,6 @@ async function openSession(input) {
   const { clientMacHint, clientIp } = parseOpenSessionInput(input);
   const resolvedMac = resolveMacFromIp(clientIp);
   const effectiveMac = resolvedMac || clientMacHint || null;
-
-  console.log("[SESSION] openSession called", {
-    clientMacHint,
-    clientIp,
-    resolvedMac,
-    effectiveMac
-  });
 
   await db.ready();
 
@@ -244,12 +239,15 @@ async function openSession(input) {
   }
 
   if (existing?.session_token) {
-    console.log("[SESSION] Found existing active session candidate", { sessionToken: existing.session_token });
     await upsertSessionNetworkIdentity(existing.session_token, effectiveMac, clientIp);
 
     const existingSession = await getSession(existing.session_token);
     if (existingSession?.status === "ACTIVE") {
-      console.log("[SESSION] Reusing existing active session", { sessionToken: existing.session_token });
+      log.info("Session resumed", {
+        sessionToken: existing.session_token,
+        clientMac: effectiveMac || null,
+        clientIp: clientIp || null
+      });
       await scheduleSessionExpiryFromSession(existingSession, { source: "OPEN" });
       return existingSession;
     }
@@ -268,7 +266,7 @@ async function openSession(input) {
     ) VALUES (?, ?, ?, 'ACTIVE', 0, CURRENT_TIMESTAMP)
   `, [sessionToken, effectiveMac, clientIp || null]);
 
-  console.log("[SESSION] Created new session", {
+  log.info("Session opened", {
     sessionToken,
     clientMac: effectiveMac,
     clientIp,
@@ -308,8 +306,6 @@ async function getSession(sessionToken) {
 
   const remaining = Math.max(0, session.credits - elapsed);
 
-  console.log(`Session ${sessionToken}: started at ${started}, elapsed ${elapsed}s, remaining ${remaining}s`);
-
   // Auto-expire: write back to DB so status reflects reality
   if (remaining === 0 && session.status === "ACTIVE" && session.credits > 0) {
     await expireSession(sessionToken, { source: "AUTO_READ" });
@@ -337,7 +333,6 @@ async function getSession(sessionToken) {
 // CREDIT SESSION (TOP-UP ONLY)
 // -------------------------
 async function creditSession(sessionToken, seconds) {
-  console.log("[SESSION] creditSession called", { sessionToken, seconds });
   await db.ready();
 
   if (!Number.isFinite(seconds) || seconds <= 0) {
@@ -354,7 +349,7 @@ async function creditSession(sessionToken, seconds) {
     // Preserve currently remaining time, then top-up and reset the countdown anchor.
     const remainingSeconds = Math.max(0, Math.ceil(getRemainingMsFromSession(session) / 1000));
     const newCredits = remainingSeconds + seconds;
-    console.log("[SESSION] Applying credits", {
+    log.info("Session credited", {
       sessionToken,
       previousCredits: session.credits,
       remainingSeconds,
@@ -387,7 +382,7 @@ async function creditSession(sessionToken, seconds) {
     if (sessionClientIp) {
       const resolvedMac = resolveMacFromIp(sessionClientIp);
       if (resolvedMac && resolvedMac !== sessionClientMac) {
-        console.log("[SESSION] Updating session MAC from IP lookup", {
+        log.debug("Updating session MAC from IP lookup", {
           sessionToken,
           previousMac: sessionClientMac,
           resolvedMac,
@@ -407,7 +402,7 @@ async function creditSession(sessionToken, seconds) {
 
       if (device && device.hotspot_enabled) {
         // Device exists and is enabled: extend access
-        console.log("[SESSION] Hotspot extend path", { sessionToken, clientMac: sessionClientMac });
+        log.info("Extending hotspot access", { sessionToken, clientMac: sessionClientMac });
         const extendResult = runHotspotAction("EXTEND", () => {
           hotspot.extendAccess(sessionClientMac, Math.ceil(seconds / 60));
         });
@@ -415,7 +410,7 @@ async function creditSession(sessionToken, seconds) {
         if (extendResult.ok && extendResult.result?.ip) {
           await upsertSessionNetworkIdentity(sessionToken, sessionClientMac, extendResult.result.ip);
 
-          console.log("[SESSION] Updated session client_ip from EXTEND", {
+          log.debug("Updated session client_ip from EXTEND", {
             sessionToken,
             clientMac: sessionClientMac,
             clientIp: extendResult.result.ip
@@ -428,7 +423,7 @@ async function creditSession(sessionToken, seconds) {
         `, [sessionClientMac, Math.ceil(seconds / 60)]);
 
         if (!extendResult.ok) {
-          console.warn("[SESSION] Hotspot extend failed (non-strict mode)", {
+          log.warn("Hotspot extend failed (non-strict mode)", {
             sessionToken,
             clientMac: sessionClientMac
           });
@@ -439,7 +434,7 @@ async function creditSession(sessionToken, seconds) {
         }
       } else {
         // First time: create access
-        console.log("[SESSION] Hotspot create path", {
+        log.info("Creating hotspot access", {
           sessionToken,
           clientMac: sessionClientMac,
           hasDeviceRecord: Boolean(device)
@@ -451,7 +446,7 @@ async function creditSession(sessionToken, seconds) {
         if (createResult.ok && createResult.result?.ip) {
           await upsertSessionNetworkIdentity(sessionToken, sessionClientMac, createResult.result.ip);
 
-          console.log("[SESSION] Updated session client_ip from CREATE", {
+          log.debug("Updated session client_ip from CREATE", {
             sessionToken,
             clientMac: sessionClientMac,
             clientIp: createResult.result.ip
@@ -471,7 +466,7 @@ async function creditSession(sessionToken, seconds) {
         `, [sessionClientMac, Math.ceil(seconds / 60)]);
 
         if (!createResult.ok) {
-          console.warn("[SESSION] Hotspot create failed (non-strict mode)", {
+          log.warn("Hotspot create failed (non-strict mode)", {
             sessionToken,
             clientMac: sessionClientMac
           });
@@ -482,7 +477,7 @@ async function creditSession(sessionToken, seconds) {
         }
       }
     } else {
-      console.warn("[SESSION] No MAC available for hotspot action", {
+      log.warn("No MAC available for hotspot action", {
         sessionToken,
         clientIp: sessionClientIp || null
       });
@@ -530,7 +525,7 @@ async function consumeSession(sessionToken, seconds) {
 // CLOSE SESSION
 // -------------------------
 async function closeSession(sessionToken) {
-  console.log("[SESSION] closeSession called", { sessionToken });
+  log.info("Session closed manually", { sessionToken });
   await expireSession(sessionToken, { source: "MANUAL" });
 }
 
@@ -551,14 +546,14 @@ async function closeAllSessions() {
       await expireSession(row.session_token, { source: "BULK" });
       expiredCount += 1;
     } catch (error) {
-      console.error("[SESSION] closeAllSessions failed for session", {
+      log.error("closeAllSessions failed for session", {
         sessionToken: row.session_token,
         message: error.message
       });
     }
   }
 
-  console.log("[SESSION] closeAllSessions complete", {
+  log.info("closeAllSessions complete", {
     totalActive: activeSessions.length,
     expiredCount
   });
@@ -590,7 +585,7 @@ async function primeExpiringSessions() {
     }
   }
 
-  console.log("[SESSION] primeExpiringSessions complete", {
+  log.debug("primeExpiringSessions complete", {
     totalActive: activeSessions.length,
     scheduledCount
   });

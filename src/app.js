@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
 const morgan = require("morgan");
+const createLogger = require("./utils/logger");
 
 const healthRoutes = require("./api/routes/health.routes");
 const detectionRoutes = require("./api/routes/detection.routes");
@@ -13,6 +14,7 @@ function resolveRouter(routeModule) {
 }
 
 const app = express();
+const httpLog = createLogger("HTTP");
 
 if (process.env.TRUST_PROXY === "1") {
 	app.set("trust proxy", true);
@@ -22,7 +24,18 @@ if (process.env.TRUST_PROXY === "1") {
 app.use(cors());
 app.use(helmet());
 app.use(express.json());
-app.use(morgan("dev"));
+if (createLogger.isEnabled) {
+	app.use(morgan("tiny", {
+		stream: {
+			write(line) {
+				const trimmed = String(line || "").trim();
+				if (trimmed) {
+					httpLog.info("request", { line: trimmed });
+				}
+			}
+		}
+	}));
+}
 
 // Routes
 app.use("/api/health", resolveRouter(healthRoutes));

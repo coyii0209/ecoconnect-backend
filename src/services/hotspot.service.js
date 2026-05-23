@@ -1,7 +1,9 @@
 const { execSync } = require("child_process");
+const createLogger = require("../utils/logger");
 
 const ALLOWED_SET_NAME = process.env.HOTSPOT_ALLOWED_SET_NAME || "allowed_clients";
 const SHOULD_ENFORCE = process.env.HOTSPOT_ENFORCE_COMMANDS === "1" || process.platform === "linux";
+const log = createLogger("HOTSPOT");
 
 function normalizeMac(mac) {
   return String(mac || "").trim().toLowerCase();
@@ -20,10 +22,10 @@ function isSafeIpValue(ip) {
 }
 
 function runCommand(command, allowFailure = false) {
-  console.log("[HOTSPOT] Executing command", { command, allowFailure, enforce: SHOULD_ENFORCE });
+  log.debug("Executing command", { command, allowFailure, enforce: SHOULD_ENFORCE });
 
   if (!SHOULD_ENFORCE) {
-    console.log(`[HOTSPOT] DRY RUN: ${command}`);
+    log.debug("Dry-run command skipped", { command });
     return true;
   }
 
@@ -32,10 +34,10 @@ function runCommand(command, allowFailure = false) {
       stdio: "pipe",
       encoding: "utf8"
     });
-    console.log("[HOTSPOT] Command success", { command });
+    log.debug("Command success", { command });
     return true;
   } catch (error) {
-    console.warn("[HOTSPOT] Command failed", { command, allowFailure, message: error.message });
+    log.warn("Command failed", { command, allowFailure, message: error.message });
     if (!allowFailure) {
       throw error;
     }
@@ -46,7 +48,7 @@ function runCommand(command, allowFailure = false) {
 
 function getIpFromMac(mac) {
   const normalizedMac = normalizeMac(mac);
-  console.log("[HOTSPOT] Resolving IP for MAC", { mac, normalizedMac });
+  log.debug("Resolving IP for MAC", { mac, normalizedMac });
 
   if (!normalizedMac) {
     throw new Error("MAC address is required");
@@ -69,14 +71,14 @@ function getIpFromMac(mac) {
 
       const rowMac = normalizeMac(parts[lladdrIndex + 1]);
       if (rowMac === normalizedMac) {
-        console.log("[HOTSPOT] MAC resolved via ip neigh", { mac: normalizedMac, ip });
+        log.debug("MAC resolved via ip neigh", { mac: normalizedMac, ip });
         return ip;
       }
 
       arpCandidates.push({ ip, mac: rowMac });
     }
   } catch (error) {
-    console.warn("[HOTSPOT] Could not read 'ip neigh show' output", error.message);
+    log.debug("Could not read ip neigh show output", { message: error.message });
   }
 
   try {
@@ -92,14 +94,14 @@ function getIpFromMac(mac) {
       const ip = match[1];
       const rowMac = normalizeMac(match[2]);
       if (rowMac === normalizedMac) {
-        console.log("[HOTSPOT] MAC resolved via arp -an", { mac: normalizedMac, ip });
+        log.debug("MAC resolved via arp", { mac: normalizedMac, ip });
         return ip;
       }
 
       arpCandidates.push({ ip, mac: rowMac });
     }
   } catch (error) {
-    console.warn("[HOTSPOT] Could not read 'arp -an' output", error.message);
+    log.debug("Could not read arp output", { message: error.message });
   }
 
   throw new Error(`No IP found for MAC ${mac}. Seen entries: ${arpCandidates.length}`);
@@ -107,7 +109,7 @@ function getIpFromMac(mac) {
 
 function getMacFromIp(ip) {
   const normalizedIp = normalizeIp(ip);
-  console.log("[HOTSPOT] Resolving MAC for IP", { ip, normalizedIp });
+  log.debug("Resolving MAC for IP", { ip, normalizedIp });
 
   if (!normalizedIp) {
     throw new Error("IP address is required");
@@ -132,12 +134,12 @@ function getMacFromIp(ip) {
 
       const rowMac = normalizeMac(parts[lladdrIndex + 1]);
       if (rowIp === normalizedIp && rowMac) {
-        console.log("[HOTSPOT] IP resolved via ip neigh", { ip: normalizedIp, mac: rowMac });
+        log.debug("IP resolved via ip neigh", { ip: normalizedIp, mac: rowMac });
         return rowMac;
       }
     }
   } catch (error) {
-    console.warn("[HOTSPOT] Could not read 'ip neigh show <ip>' output", error.message);
+    log.debug("Could not read ip neigh show output", { message: error.message, ip: normalizedIp });
   }
 
   try {
@@ -153,25 +155,25 @@ function getMacFromIp(ip) {
       const rowIp = normalizeIp(match[1]);
       const rowMac = normalizeMac(match[2]);
       if (rowIp === normalizedIp && rowMac) {
-        console.log("[HOTSPOT] IP resolved via arp -an", { ip: normalizedIp, mac: rowMac });
+        log.debug("IP resolved via arp", { ip: normalizedIp, mac: rowMac });
         return rowMac;
       }
     }
   } catch (error) {
-    console.warn("[HOTSPOT] Could not read 'arp -an' output", error.message);
+    log.debug("Could not read arp output", { message: error.message });
   }
 
   throw new Error(`No MAC found for IP ${normalizedIp}`);
 }
 
 function allowClientIp(clientIp) {
-  console.log("[HOTSPOT] Allow client IP", { clientIp, setName: ALLOWED_SET_NAME });
+  log.info("Allowing client IP", { clientIp, setName: ALLOWED_SET_NAME });
   runCommand(`sudo ipset add -exist ${ALLOWED_SET_NAME} ${clientIp}`);
   runCommand(`sudo iptables -D FORWARD -s ${clientIp} -j DROP`, true);
 }
 
 function blockClientIp(clientIp) {
-  console.log("[HOTSPOT] Block client IP", { clientIp, setName: ALLOWED_SET_NAME });
+  log.info("Blocking client IP", { clientIp, setName: ALLOWED_SET_NAME });
   runCommand(`sudo ipset del -exist ${ALLOWED_SET_NAME} ${clientIp}`);
   const dropRuleExists = runCommand(`sudo iptables -C FORWARD -s ${clientIp} -j DROP`, true);
   if (!dropRuleExists) {
@@ -180,10 +182,10 @@ function blockClientIp(clientIp) {
 }
 
 function listAllowedClientIps() {
-  console.log("[HOTSPOT] Listing allowed client IPs", { setName: ALLOWED_SET_NAME });
+  log.debug("Listing allowed client IPs", { setName: ALLOWED_SET_NAME });
 
   if (!SHOULD_ENFORCE) {
-    console.log("[HOTSPOT] DRY RUN: ipset list", { setName: ALLOWED_SET_NAME });
+    log.debug("Dry-run ipset list", { setName: ALLOWED_SET_NAME });
     return [];
   }
 
@@ -192,7 +194,7 @@ function listAllowedClientIps() {
   try {
     output = execSync(`sudo ipset list ${ALLOWED_SET_NAME}`, { encoding: "utf8", stdio: "pipe" });
   } catch (error) {
-    console.warn("[HOTSPOT] Could not list allowed client IPs", {
+    log.warn("Could not list allowed client IPs", {
       setName: ALLOWED_SET_NAME,
       message: error.message
     });
@@ -220,7 +222,7 @@ function listAllowedClientIps() {
     }
   }
 
-  console.log("[HOTSPOT] Allowed client IPs found", { count: ips.length, ips });
+  log.info("Allowed client IPs listed", { count: ips.length });
   return ips;
 }
 
@@ -230,7 +232,7 @@ function revokeAccessByIp(clientIp) {
     throw new Error("IP address is required");
   }
 
-  console.log("[HOTSPOT] REVOKE ACCESS BY IP ->", normalizedIp);
+  log.info("Revoking access by IP", { ip: normalizedIp });
   blockClientIp(normalizedIp);
 
   return {
@@ -249,11 +251,11 @@ function revokeAllAllowedClientIps() {
       revokeAccessByIp(ip);
       revokedCount += 1;
     } catch (error) {
-      console.warn("[HOTSPOT] Failed to revoke allowed client IP", { ip, message: error.message });
+      log.warn("Failed to revoke allowed client IP", { ip, message: error.message });
     }
   }
 
-  console.log("[HOTSPOT] revokeAllAllowedClientIps complete", {
+  log.info("Revoke-all complete", {
     total: ips.length,
     revokedCount
   });
@@ -268,7 +270,7 @@ function createAccess(mac, minutes) {
   const ip = getIpFromMac(mac);
   allowClientIp(ip);
 
-  console.log(`[HOTSPOT] GRANT ACCESS -> ${mac} (${ip}) for ${minutes} min`);
+  log.info("Access granted", { mac, ip, minutes });
   return {
     success: true,
     action: "createAccess",
@@ -282,7 +284,7 @@ function extendAccess(mac, minutes) {
   const ip = getIpFromMac(mac);
   allowClientIp(ip);
 
-  console.log(`[HOTSPOT] EXTEND ACCESS -> ${mac} (${ip}) +${minutes} min`);
+  log.info("Access extended", { mac, ip, minutes });
   return {
     success: true,
     action: "extendAccess",
@@ -296,7 +298,7 @@ function revokeAccess(mac) {
   const ip = getIpFromMac(mac);
   blockClientIp(ip);
 
-  console.log(`[HOTSPOT] REVOKE ACCESS -> ${mac} (${ip})`);
+  log.info("Access revoked", { mac, ip });
   return {
     success: true,
     action: "revokeAccess",
