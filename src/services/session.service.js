@@ -340,6 +340,10 @@ async function creditSession(sessionToken, seconds) {
   console.log("[SESSION] creditSession called", { sessionToken, seconds });
   await db.ready();
 
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    throw new Error("seconds must be a positive number");
+  }
+
   await db.transaction(async () => {
     const session = await db.get(`
       SELECT * FROM sessions WHERE session_token = ?
@@ -347,17 +351,23 @@ async function creditSession(sessionToken, seconds) {
 
     if (!session) throw new Error("Session not found");
 
-    const newCredits = session.credits + seconds;
+    // Preserve currently remaining time, then top-up and reset the countdown anchor.
+    const remainingSeconds = Math.max(0, Math.ceil(getRemainingMsFromSession(session) / 1000));
+    const newCredits = remainingSeconds + seconds;
     console.log("[SESSION] Applying credits", {
       sessionToken,
       previousCredits: session.credits,
+      remainingSeconds,
       addSeconds: seconds,
       newCredits
     });
 
     await db.run(`
       UPDATE sessions
-      SET credits = ?
+      SET credits = ?,
+          started_at = CURRENT_TIMESTAMP,
+          status = 'ACTIVE',
+          ended_at = NULL
       WHERE session_token = ?
     `, [newCredits, sessionToken]);
 
