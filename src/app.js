@@ -8,6 +8,7 @@ const healthRoutes = require("./api/routes/health.routes");
 const detectionRoutes = require("./api/routes/detection.routes");
 const processRoutes = require("./api/routes/process.routes");
 const sessionRoutes = require("./api/routes/session.routes");
+const { triggerIrReward } = require("./services/process.service");
 
 function resolveRouter(routeModule) {
 	return routeModule && routeModule.default ? routeModule.default : routeModule;
@@ -42,5 +43,18 @@ app.use("/api/health", resolveRouter(healthRoutes));
 app.use("/api/detection", resolveRouter(detectionRoutes));
 app.use("/api/process", resolveRouter(processRoutes));
 app.use("/api/session", resolveRouter(sessionRoutes));
+
+app.get("/trigger", async (req, res) => {
+  try {
+    const result = await triggerIrReward();
+    if (!result.ok) {
+      return res.status(409).json({ ok: false, error: result.reason, data: result.state });
+    }
+    return res.json({ ok: true, data: result });
+  } catch (error) {
+    httpLog.error("GET /trigger error", error);
+    return res.status(500).json({ ok: false, error: error.message });
+  }
+});
 
 module.exports = app;

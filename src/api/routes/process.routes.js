@@ -95,9 +95,9 @@ router.post("/admin/servo", (req, res) => {
   }
 });
 
-router.post("/admin/ir-trigger", async (req, res) => {
+async function handleIrTrigger(req, res) {
   try {
-    console.log("[PROCESS_ROUTE] POST /admin/ir-trigger");
+    console.log("[PROCESS_ROUTE] /admin/ir-trigger");
     const result = await triggerIrReward();
 
     if (!result.ok) {
@@ -110,7 +110,10 @@ router.post("/admin/ir-trigger", async (req, res) => {
     console.error("[PROCESS_ROUTE] /admin/ir-trigger error", error);
     res.status(500).json(failure(error.message));
   }
-});
+}
+
+router.post("/admin/ir-trigger", handleIrTrigger);
+router.get("/admin/ir-trigger", handleIrTrigger);
 
 router.post("/reset", (req, res) => {
   try {
