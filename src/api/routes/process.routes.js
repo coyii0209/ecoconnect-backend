@@ -71,7 +71,7 @@ router.post("/admin/decision", (req, res) => {
   }
 });
 
-router.post("/admin/servo", (req, res) => {
+router.post("/admin/servo", async (req, res) => {
   try {
     const { opened } = req.body;
     console.log("[PROCESS_ROUTE] POST /admin/servo", { opened });
@@ -81,7 +81,7 @@ router.post("/admin/servo", (req, res) => {
       return res.status(400).json(failure("opened must be boolean"));
     }
 
-    const result = setServo(opened);
+    const result = await setServo(opened);
 
     if (!result.ok) {
       console.warn("[PROCESS_ROUTE] /admin/servo conflict", { reason: result.reason });
@@ -115,10 +115,17 @@ async function handleIrTrigger(req, res) {
 router.post("/admin/ir-trigger", handleIrTrigger);
 router.get("/admin/ir-trigger", handleIrTrigger);
 
-router.post("/reset", (req, res) => {
+router.post("/reset", async (req, res) => {
   try {
     console.log("[PROCESS_ROUTE] POST /reset");
-    res.json(success(resetProcess()));
+    const result = await resetProcess();
+
+    if (!result.ok) {
+      console.warn("[PROCESS_ROUTE] /reset conflict", { reason: result.reason });
+      return res.status(409).json(failure(result.reason, result.state));
+    }
+
+    res.json(success(result));
   } catch (error) {
     console.error("[PROCESS_ROUTE] /reset error", error);
     res.status(500).json(failure(error.message));

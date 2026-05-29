@@ -1,6 +1,7 @@
 const db = require("../database/sqlite");
 const { getSession, creditSession } = require("./session.service");
 const rewardService = require("./reward.service");
+const servoService = require("./servo.service");
 const createLogger = require("../utils/logger");
 
 const REWARD_COOLDOWN_MS = 5000;
@@ -186,8 +187,9 @@ function setDecision(decision) {
   };
 }
 
-function setServo(opened) {
+async function setServo(opened) {
   debugLog("setServo called", { opened, requestId: processState.requestId });
+
   if (opened) {
     if (!processState.requestActive || processState.yoloDecision !== "valid") {
       log.warn("setServo(open) rejected: flow not ready", {
@@ -197,6 +199,19 @@ function setServo(opened) {
       return {
         ok: false,
         reason: "FLOW_NOT_READY",
+        state: getProcessState()
+      };
+    }
+
+    try {
+      await servoService.openGate();
+    } catch (error) {
+      log.error("setServo(open) failed: hardware command error", {
+        message: error.message
+      });
+      return {
+        ok: false,
+        reason: "SERVO_COMMAND_FAILED",
         state: getProcessState()
       };
     }
@@ -212,6 +227,19 @@ function setServo(opened) {
     return {
       ok: true,
       reason: "SERVO_OPENED",
+      state: getProcessState()
+    };
+  }
+
+  try {
+    await servoService.closeGate();
+  } catch (error) {
+    log.error("setServo(close) failed: hardware command error", {
+      message: error.message
+    });
+    return {
+      ok: false,
+      reason: "SERVO_COMMAND_FAILED",
       state: getProcessState()
     };
   }
@@ -265,6 +293,14 @@ async function triggerIrReward() {
     };
   }
 
+  processState = {
+    ...processState,
+    irBottomDetected: true,
+    pipelineStatus: "IR detected, processing reward"
+  };
+
+  notify("IR_DETECTED");
+
   await db.ready();
 
   const result = await db.run(`
@@ -280,64 +316,119 @@ async function triggerIrReward() {
   const reward = await rewardService.processReward(result.lastInsertRowid, DETECTION_LABEL);
   debugLog("Reward evaluation complete", reward);
 
-  if (reward.rejected || reward.minutes <= 0) {
+  const completedRequestId = processState.requestId;
+  const completedSessionToken = processState.sessionToken;
+
+  let rewardGranted = false;
+  let rewardMinutes = 0;
+  let completionReason = reward.reason || "NO_REWARD";
+  let outcome = "rejected";
+  let pipelineStatus = "Bottle rejected";
+
+  if (!reward.rejected && reward.minutes > 0) {
+    await creditSession(completedSessionToken, reward.minutes * 60);
+    log.info("Session credited from process", {
+      requestId: completedRequestId,
+      sessionToken: completedSessionToken,
+      rewardMinutes: reward.minutes,
+      rewardSeconds: reward.minutes * 60
+    });
+
+    rewardGranted = true;
+    rewardMinutes = reward.minutes;
+    completionReason = "CREDIT_ADDED";
+    outcome = "rewarded";
+    pipelineStatus = "Credit added!";
+  }
+
+  try {
+    await servoService.closeGate();
+  } catch (error) {
+    log.error("triggerIrReward failed to close servo gate", {
+      message: error.message,
+      requestId: completedRequestId,
+      sessionToken: completedSessionToken
+    });
+
     processState = {
-      ...initialState(),
-      cooldownUntil: processState.cooldownUntil,
-      lastOutcome: "rejected",
-      lastReason: reward.reason || "NO_REWARD",
-      pipelineStatus: "Bottle rejected"
+      ...processState,
+      pipelineStatus: "Reward done, waiting for servo close",
+      lastOutcome: outcome,
+      lastReason: "SERVO_CLOSE_FAILED"
     };
 
-    notify("BOTTLE_REJECTED");
+    notify("SERVO_CLOSE_FAILED", {
+      requestId: completedRequestId,
+      sessionToken: completedSessionToken
+    });
 
     return {
       ok: false,
-      reason: reward.reason || "NO_REWARD",
-      rewardMinutes: 0,
+      reason: "SERVO_CLOSE_FAILED",
+      rewardMinutes,
+      requestId: completedRequestId,
+      sessionToken: completedSessionToken,
       state: getProcessState()
     };
   }
 
-  const completedRequestId = processState.requestId;
-  const completedSessionToken = processState.sessionToken;
-
-  await creditSession(completedSessionToken, reward.minutes * 60);
-  log.info("Session credited from process", {
-    requestId: completedRequestId,
-    sessionToken: completedSessionToken,
-    rewardMinutes: reward.minutes,
-    rewardSeconds: reward.minutes * 60
-  });
-
   processState = {
     ...initialState(),
     cooldownUntil: Date.now() + REWARD_COOLDOWN_MS,
-    lastOutcome: "rewarded",
-    lastReason: null,
-    pipelineStatus: "Credit added!"
+    lastOutcome: outcome,
+    lastReason: rewardGranted ? null : completionReason,
+    pipelineStatus
   };
 
-  notify("CREDIT_ADDED", {
+  if (rewardGranted) {
+    notify("CREDIT_ADDED", {
+      requestId: completedRequestId,
+      sessionToken: completedSessionToken
+    });
+
+    return {
+      ok: true,
+      reason: "CREDIT_ADDED",
+      rewardMinutes,
+      requestId: completedRequestId,
+      sessionToken: completedSessionToken,
+      state: getProcessState()
+    };
+  }
+
+  notify("BOTTLE_REJECTED", {
     requestId: completedRequestId,
     sessionToken: completedSessionToken
   });
 
   return {
-    ok: true,
-    reason: "CREDIT_ADDED",
-    rewardMinutes: reward.minutes,
+    ok: false,
+    reason: completionReason,
+    rewardMinutes,
     requestId: completedRequestId,
     sessionToken: completedSessionToken,
     state: getProcessState()
   };
 }
 
-function resetProcess() {
+async function resetProcess() {
   debugLog("resetProcess called", {
     previousRequestId: processState.requestId,
     previousStatus: processState.pipelineStatus
   });
+
+  try {
+    await servoService.closeGate();
+  } catch (error) {
+    log.error("resetProcess failed to close servo gate", {
+      message: error.message
+    });
+    return {
+      ok: false,
+      reason: "SERVO_COMMAND_FAILED",
+      state: getProcessState()
+    };
+  }
 
   processState = {
     ...initialState(),
