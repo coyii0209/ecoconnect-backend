@@ -1,4 +1,5 @@
 const express = require("express");
+const servoService = require("../../services/servo.service");
 const {
   getProcessState,
   startRequest,
@@ -91,6 +92,29 @@ router.post("/admin/servo", async (req, res) => {
     res.json(success(result));
   } catch (error) {
     console.error("[PROCESS_ROUTE] /admin/servo error", error);
+    res.status(500).json(failure(error.message));
+  }
+});
+
+router.post("/admin/servo/manual", async (req, res) => {
+  try {
+    const { opened } = req.body;
+    console.log("[PROCESS_ROUTE] POST /admin/servo/manual", { opened });
+
+    if (typeof opened !== "boolean") {
+      console.warn("[PROCESS_ROUTE] /admin/servo/manual rejected: opened must be boolean");
+      return res.status(400).json(failure("opened must be boolean"));
+    }
+
+    if (opened) {
+      await servoService.openGate();
+      return res.json(success({ ok: true, reason: "SERVO_MANUAL_OPENED" }));
+    }
+
+    await servoService.closeGate();
+    return res.json(success({ ok: true, reason: "SERVO_MANUAL_CLOSED" }));
+  } catch (error) {
+    console.error("[PROCESS_ROUTE] /admin/servo/manual error", error);
     res.status(500).json(failure(error.message));
   }
 });
